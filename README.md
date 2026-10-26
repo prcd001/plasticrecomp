@@ -41,6 +41,25 @@ pwsh scripts\boot_check.ps1          (run in the background, screenshots at 5/12
 ```
 
 `scripts/run_lift.py` is pcrecomp's default pipeline plus the jump-table arms it misses
-(see `NOTES.md`); plain `python -m tools` output crashes in memmove.
+(see `NOTES.md`); plain `python -m tools` output crashes in memmove. It also records which exe it
+lifted (`recomp_target.h`), and the host refuses to run any other: lift the exe you own, retail or GOG.
+
+Host options:
+
+| option | what |
+|---|---|
+| `--game DIR` | the game folder (default `game`) |
+| `--watchdog S` | report where the guest is after S seconds, then end the run |
+| `--dry` | map and bind only |
+| `--imports` | with `--watchdog`: where each USER32/GDI32/DINPUT import slot really points |
+| `--no-route` | leave USER32 as native32 bound it, skipping cnc-ddraw's window and mouse hooks |
+| `--route-gdi` | also route GDI32 (breaks movie colours; for experiments) |
+| `--raw-mouse` | the game gets DirectInput's raw mouse counts, as in 1999 (default: it follows the Windows cursor) |
+| `--mouse-log` | log the game's mouse device calls and each cursor correction |
+| `--dplay-check` | create the game's DirectPlay object and list its connections, then exit |
+
+First-time setup for any owner (disc, GOG or Steam): `pwsh scripts\setup.ps1 -From <game folder>`.
+It copies the game into `game\`, puts cnc-ddraw in place, lifts that exe and builds the host. Without
+`-From` it looks up GOG's and Steam's install records.
 
 See `NOTES.md` for what was measured.
