@@ -83,14 +83,42 @@ player pressing a key was not tested.
 
 ## Not done yet
 
-- **Past the title menu.** SINGLE PLAYER and BOOT CAMP run the retail CD check, which wants the disc
-  (volume label `ARMYMEN2`) in a drive. Nothing here bypasses it.
+- **Past the title menu.** Works. The owner mounted an image of their own disc (`G:\Licensed
+  copies\Army Men 2 Original ENG.iso`, label `ARMYMEN2`; it had to be mounted after a Windows restart,
+  because cdrom.sys was stuck with Code 38). They played Boot Camp. Nothing here bypasses the CD check.
 - **Guest C++ exceptions.** The default lifter emits no `RECOMP_EH_ENTER` landing pads, and the CRT is
   static (no `_CxxThrowException` import for native32's eh32 to catch), so a guest `throw` would end
-  the process. None was hit during boot.
-- **Input under the host.** Done for the mouse: see "Mouse" below (window and cursor calls routed to
-  cnc-ddraw, and the game's cursor fed from the Windows cursor; the owner confirmed the feel).
-  Gameplay past the title menu is still untested.
+  the process. None has been hit yet.
+- **Input under the host.** Done for the mouse; see "Mouse" below. The owner confirmed the feel.
+
+## Display: the host's own DirectDraw and presenter (default since 2026-10-26)
+
+`--cnc-ddraw` keeps the earlier path. The design and its steps are in `docs/R_hires.md`. In short:
+- **`src/host/vddraw.c`** answers `DirectDrawCreate`, so ddraw.dll and cnc-ddraw are never loaded.
+  - Real COM objects with native vtables implement exactly the methods of the game's fullscreen
+    path (a DirectDraw inventory subagent listed them).
+  - Surfaces are 8-bit DIB sections, so the font builder's GDI text works. Flip swaps buffers, and
+    blits are overlap-safe.
+  - A presenter thread shows the primary at up to 60 fps.
+- **`src/host/present.c`** (D3D11): an R8 frame plus a palette texture, the lookup in the shader,
+  nearest or sharp-bilinear, aspect kept. It draws regions at different scales.
+- **The window** is resizable, and opens at the largest whole multiple of 640x480 that fits.
+  `GetSystemMetrics` answers 640x480, and the process is per-monitor DPI aware.
+- **It keeps running unfocused.** Without that the intro froze on focus loss. The host swallows
+  `WM_ACTIVATE`/`WM_ACTIVATEAPP` deactivation and shims `GetFocus`.
+- **One CPU core**, as cnc-ddraw's `singlecpu` did: smackw32's 1999 audio code races on several
+  cores, so movies stalled at random frames. Proven with `--movie-log`: in the virtual path 4 of 4
+  runs stalled; pinned, 8 of 8 played, and the owner confirmed the intro and VIEW MOVIES. Game speed
+  equals the cnc-ddraw path.
+- **HUD layout in missions** (state `0x00511DA4` == 2), drawn by the presenter as regions with no
+  lifted code changed:
+  - the battlefield at the world scale;
+  - the top strip stretched to the window's width;
+  - the panel at the window's right edge.
+  Shift+Plus/Minus scale the HUD.
+- **Single copy:** the game quits silently (`ExitProcess(0)` from `sub_00469331`) if `ArmyMenMutex`
+  exists. The host checks first and says so. Test runs started while the owner played looked like
+  "crashes in the first movie" because of this.
 
 ## Mouse: cnc-ddraw's hooks and the recompiled game
 
@@ -163,6 +191,10 @@ Smoke test, no hand on the mouse: the first cycle fed `Y=+40, Y=0` (cnc-ddraw's 
 game's (320,200)) and later cycles fed nothing, so the game's cursor read back equal to the target.
 Owner's feel test (2026-10-26): "the mouse feels right now".
 
+In the virtual display path there is no cnc-ddraw to ask. There the target comes from `vdd_cursor`
+(the real cursor, `ScreenToClient`, then the presenter's region mapping), and `hook_set_coop` forces
+the mouse device to `DISCL_NONEXCLUSIVE|DISCL_FOREGROUND`, which cnc-ddraw's hook used to do.
+
 ## Multiplayer: legacy DirectPlay
 
 The game asks for `IDirectPlay3A` (`CLSID_DirectPlay` at 0x0046F6D8, `IID_IDirectPlay3A` at
@@ -218,6 +250,10 @@ SteamStub's) instead of unwrapping it; tested on a scratch copy with a section r
 project removes no copy protection, and pcrecomp's `tools/drm/` scripts are not used.
 
 ## Tooling
+
+- `scripts/setup.ps1`: owner's game (disc, GOG, Steam) to built host.
+- `scripts/present_test.c`: the presenter, tested alone.
+- `scripts/hash_compare.py`: the provenance hashing.
 
 `scripts/run.ps1` (run, log to `build\run.log`), `scripts/screenshot.ps1` (capture the game window
 to `build\screens\`), `scripts/boot_check.ps1` (run plus screenshots at 5/12/20/30 s) and

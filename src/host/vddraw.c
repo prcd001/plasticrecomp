@@ -28,6 +28,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <ddraw.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -461,9 +462,16 @@ static HRESULT WINAPI dd_RestoreDisplayMode(void* t) { (void)t; return DD_OK; }
  * guest's window procedure is called through CallWindowProcA, natively: the
  * fetch faults and native32 runs the lift. GetFocus is shimmed in main.c. */
 static WNDPROC g_guest_proc;
+static void ui_step(int dir);           /* layout, below */
 static LRESULT CALLBACK keep_active(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (vdd_trace && (msg == WM_ACTIVATEAPP || msg == WM_ACTIVATE || msg == WM_SETFOCUS || msg == WM_KILLFOCUS))
         fprintf(stderr, "[ddraw] window msg 0x%X wp=%lX\n", msg, (unsigned long)wp);
+    if (msg == WM_CLOSE || msg == WM_DESTROY || msg == WM_QUIT || (msg == WM_SYSCOMMAND && (wp & 0xFFF0) == SC_CLOSE))
+        fprintf(stderr, "[ddraw] window msg 0x%X wp=%lX (closing)\n", msg, (unsigned long)wp);
+    if (msg == WM_KEYDOWN && (GetKeyState(VK_SHIFT) & 0x8000)) {
+        if (wp == VK_OEM_PLUS || wp == VK_ADD) ui_step(+1);
+        else if (wp == VK_OEM_MINUS || wp == VK_SUBTRACT) ui_step(-1);
+    }
     if (msg == WM_ACTIVATEAPP && !wp) return 0;
     if (msg == WM_ACTIVATE && LOWORD(wp) == WA_INACTIVE) return 0;
     return CallWindowProcA(g_guest_proc, hwnd, msg, wp, lp);
@@ -472,7 +480,9 @@ static LRESULT CALLBACK keep_active(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 /* The game's window becomes an ordinary resizable window, sized to the largest
  * whole multiple of the mode that fits 90% of the work area. */
 static void make_window(HWND hwnd) {
-    g_guest_proc = (WNDPROC)SetWindowLongPtrA(hwnd, GWLP_WNDPROC, (LONG_PTR)keep_active);
+    if (!getenv("PLASTIC_NO_SUBCLASS"))   /* test switch */
+        g_guest_proc = (WNDPROC)SetWindowLongPtrA(hwnd, GWLP_WNDPROC, (LONG_PTR)keep_active);
+    if (getenv("PLASTIC_NO_RESTYLE")) return;
     RECT work;
     SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0);
     int ww = work.right - work.left, wh = work.bottom - work.top, k = 1;
@@ -538,6 +548,77 @@ static HRESULT WINAPI dd2_GetAvailableVidMem(void* t, DDSCAPS* caps, DWORD* tota
 static const void* const g_dd1_vtbl[23] = { DD_COMMON(dd1_SetDisplayMode) };
 static const void* const g_dd2_vtbl[24] = { DD_COMMON(dd2_SetDisplayMode), dd2_GetAvailableVidMem };
 
+/* ------------------------------------------------------------------ layout */
+
+/* In a mission (g_gameState 0x00511DA4 == 2) the HUD is three opaque, fixed
+ * rectangles the game paints over the battlefield every frame: the top strip
+ * (0,0)-(640,21), and the panel plus the 16-px edge strip from the
+ * battlefield's right edge BLIT_RECT.right (0x00485328: 480 with the panel
+ * open, 624 closed) to 640, from y 21 down. So the frame is presented as
+ * regions: the battlefield at the world scale, where it always was, and the
+ * two HUD pieces at their own UI scale, anchored to the picture's top-left and
+ * top-right. Menus and movies are the whole frame. No lifted code changes.
+ *
+ * UI scale: 0 follows the world's fit scale (the picture as it always was).
+ * Shift+Plus / Shift+Minus step it by halves between 1 (native pixels) and the
+ * fit scale; it never exceeds the fit, so the 459-px-tall panel always fits.
+ * (Plus / Minus alone are kept for the battlefield zoom of step 4.) */
+#define ADDR_GAME_STATE 0x00511DA4u
+#define ADDR_BLIT_RIGHT 0x00485328u
+#define STATE_MISSION 2
+
+static volatile LONG g_ui_halves;       /* UI scale x2; 0 = follow the world */
+
+static void ui_step(int dir) {
+    RECT rc;
+    if (!g_hwnd || !GetClientRect(g_hwnd, &rc)) return;
+    double fit = (double)rc.right / g_mode_w < (double)rc.bottom / g_mode_h
+               ? (double)rc.right / g_mode_w : (double)rc.bottom / g_mode_h;
+    int max_h = (int)floor(fit * 2), cur = g_ui_halves ? (int)g_ui_halves : max_h;
+    cur += dir;
+    if (cur < 2) cur = 2;
+    if (cur >= max_h) cur = 0;          /* back to following the world */
+    InterlockedExchange(&g_ui_halves, cur);
+    if (vdd_trace) fprintf(stderr, "[ddraw] UI scale %s\n", cur ? "set" : "follows the world");
+}
+
+static int layout(int cw, int ch, int w, int h, present_region_t* rg) {
+    /* test switches: PLASTIC_FORCE_LAYOUT=1 applies the mission layout anywhere,
+     * PLASTIC_UI_HALVES=n presets the UI scale (n/2) */
+    static int force = -1;
+    if (force < 0) {
+        const char* f = getenv("PLASTIC_FORCE_LAYOUT"), *u = getenv("PLASTIC_UI_HALVES");
+        force = f && *f == '1';
+        if (u) g_ui_halves = atoi(u);
+    }
+    if (w != 640 || h != 480 || (!force && (int)MEM32(ADDR_GAME_STATE) != STATE_MISSION)) return 0;
+    double s = (double)cw / w < (double)ch / h ? (double)cw / w : (double)ch / h;
+    int pw = (int)(w * s + 0.5), ph = (int)(h * s + 0.5);
+    int px = (cw - pw) / 2, py = (ch - ph) / 2;
+    double u = g_ui_halves ? g_ui_halves / 2.0 : s;
+    if (u > s) u = s;
+    int right = (int)MEM32(ADDR_BLIT_RIGHT);
+    if (right < 1 || right > w) right = w - 16;
+    int n = 0;
+    /* the battlefield, where it always was */
+    rg[n].sx = 0, rg[n].sy = 21, rg[n].sw = right, rg[n].sh = h - 21;
+    rg[n].dx = px, rg[n].dy = py + (int)(21 * s + 0.5);
+    rg[n].dw = (int)(right * s + 0.5), rg[n].dh = py + ph - rg[n].dy;
+    n++;
+    /* the top strip (the message/chat line): the full width of the window,
+     * stretched sideways, at the UI scale's height (owner, 2026-10-26) */
+    rg[n].sx = 0, rg[n].sy = 0, rg[n].sw = w, rg[n].sh = 21;
+    rg[n].dx = 0, rg[n].dy = 0, rg[n].dw = cw, rg[n].dh = (int)(21 * u + 0.5);
+    n++;
+    /* the panel and edge strip, anchored to the window's right edge, under the strip */
+    rg[n].sx = right, rg[n].sy = 21, rg[n].sw = w - right, rg[n].sh = h - 21;
+    rg[n].dw = (int)((w - right) * u + 0.5), rg[n].dh = (int)((h - 21) * u + 0.5);
+    rg[n].dx = cw - rg[n].dw, rg[n].dy = (int)(21 * u + 0.5);
+    n++;
+    (void)px; (void)pw;
+    return n;
+}
+
 /* ---------------------------------------------------------------- presenter */
 
 /* Shows the primary about 60 times a second (present_frame waits for vsync). It
@@ -546,6 +627,9 @@ static const void* const g_dd2_vtbl[24] = { DD_COMMON(dd2_SetDisplayMode), dd2_G
 static DWORD WINAPI presenter(LPVOID unused) {
     (void)unused;
     while (!g_hwnd) Sleep(5);
+    if (getenv("PLASTIC_NO_PRESENT")) {   /* test switch: no Direct3D at all */
+        for (;;) { Sleep(16); InterlockedIncrement(&vdd_presented); }
+    }
     if (!present_init(g_hwnd)) {
         fprintf(stderr, "[ddraw] presenter could not start\n");
         return 1;
@@ -562,7 +646,21 @@ static DWORD WINAPI presenter(LPVOID unused) {
         if (p->pal) memcpy(pal, p->pal->e, sizeof pal); else memset(pal, 0, sizeof pal);
         LeaveCriticalSection(&g_lock);
         if (IsIconic(g_hwnd)) { Sleep(50); continue; }
-        present_frame(frame, w, w, h, pal);
+        /* at most 60 frames a second: the game shares one core with this thread
+         * (main.c), and it never draws faster than that */
+        {
+            static LARGE_INTEGER freq, last;
+            LARGE_INTEGER now;
+            if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+            QueryPerformanceCounter(&now);
+            double ms = last.QuadPart ? (now.QuadPart - last.QuadPart) * 1000.0 / freq.QuadPart : 1000.0;
+            if (ms < 16.0) Sleep((DWORD)(16.0 - ms));
+            QueryPerformanceCounter(&last);
+        }
+        present_region_t rg[4];
+        RECT rc;
+        int n = GetClientRect(g_hwnd, &rc) ? layout(rc.right, rc.bottom, w, h, rg) : 0;
+        present_frame_regions(frame, w, w, h, pal, n ? rg : NULL, n);
         InterlockedIncrement(&vdd_presented);
     }
 }

@@ -164,6 +164,7 @@ static void shim_timeKillEvent(void) {
  * source (winproc.cpp:317-331). cnc-ddraw's hook answered 640x480; with the
  * virtual DirectDraw the host does. */
 static int g_cnc_ddraw;               /* --cnc-ddraw: the old path, real ddraw.dll from game\ */
+static int g_multicore;               /* --multicore: do not pin the process to one core */
 static void shim_GetSystemMetrics(void) {
     int i = (int)ARG(0), w, h;
     if (!g_cnc_ddraw && (i == SM_CXSCREEN || i == SM_CYSCREEN)) {
@@ -183,7 +184,58 @@ static void shim_GetFocus(void) {
     g_esp += 4;
 }
 
+/* --movie-log: Smacker's frame and wait calls counted, and a status line every
+ * 2 s, to tell a movie whose decoder stops (SmackWait never says go: the clock)
+ * from one whose frames do not reach the screen (owner: movies freeze, the game
+ * does not; 2026-10-26). */
+static int g_movie_log;
+static volatile LONG g_smk_frames, g_smk_wait_go, g_smk_wait_hold;
+static FARPROC smk_fn(const char* name) {
+    static HMODULE smk;
+    if (!smk) smk = LoadLibraryA("smackw32.dll");
+    return smk ? GetProcAddress(smk, name) : NULL;
+}
+static void shim_SmackDoFrame(void) {
+    static FARPROC real;
+    if (!real) real = smk_fn("_SmackDoFrame@4");
+    uint32_t smk = ARG(0);
+    mach_leave();
+    uint32_t r = ((uint32_t(WINAPI*)(uint32_t))real)(smk);
+    mach_enter();
+    InterlockedIncrement(&g_smk_frames);
+    g_eax = r;
+    g_esp += 4 + 1 * 4;
+}
+static void shim_SmackWait(void) {
+    static FARPROC real;
+    if (!real) real = smk_fn("_SmackWait@4");
+    uint32_t smk = ARG(0);
+    mach_leave();
+    uint32_t r = ((uint32_t(WINAPI*)(uint32_t))real)(smk);
+    mach_enter();
+    InterlockedIncrement(r ? &g_smk_wait_hold : &g_smk_wait_go);
+    g_eax = r;
+    g_esp += 4 + 1 * 4;
+}
+static DWORD WINAPI movie_status(LPVOID unused) {
+    (void)unused;
+    for (DWORD t = 2;; t += 2) {
+        Sleep(2000);
+        fprintf(stderr, "[status] %3lus: movie frames %ld, SmackWait go %ld / hold %ld, presented %ld, "
+                "in sub_%08X, foreground=%d\n", t, g_smk_frames, g_smk_wait_go, g_smk_wait_hold,
+                vdd_presented, g_cur_func, GetForegroundWindow() == vdd_window());
+    }
+}
+
+/* The game's own exit: logged, so a run that ends without a fault says who ended it. */
+static void shim_ExitProcess(void) {
+    fprintf(stderr, "\n[exit] ExitProcess(%u) from sub_%08X\n", ARG(0), g_cur_func);
+    native32_dump_icalls(10);
+    ExitProcess(ARG(0));
+}
+
 static native32_shim_t g_shims[] = {
+    { "ExitProcess", shim_ExitProcess },
     { "GetModuleFileNameA", shim_GetModuleFileNameA },
     { "GetCommandLineA", shim_GetCommandLineA },
     { "SetUnhandledExceptionFilter", shim_SetUnhandledExceptionFilter },
@@ -191,6 +243,8 @@ static native32_shim_t g_shims[] = {
     { "timeSetEvent", shim_timeSetEvent },
     { "timeKillEvent", shim_timeKillEvent },
     { "DirectInputCreateA", shim_DirectInputCreateA },   /* mouse.c */
+    { "_SmackDoFrame@4", shim_SmackDoFrame },
+    { "_SmackWait@4", shim_SmackWait },
     /* the virtual DirectDraw; left out with --cnc-ddraw (they must stay last) */
     { "DirectDrawCreate", shim_DirectDrawCreate },       /* vddraw.c */
     { "GetSystemMetrics", shim_GetSystemMetrics },
@@ -484,7 +538,16 @@ static DWORD WINAPI run(LPVOID unused) {
     native32_init();
     /* Physical pixels for the presenter's window and the cursor mapping, so a
      * scaled desktop does not blur the picture a second time. */
-    if (!g_cnc_ddraw) SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    if (!g_cnc_ddraw && !getenv("PLASTIC_NO_DPI")) SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    /* One CPU core, as cnc-ddraw's singlecpu=true did. smackw32's 1999 audio
+     * code races on several cores: the movie clock (SmackWait) stalls at a
+     * random frame, 4 runs of 4 in the virtual path; pinned, 5 of 5 play
+     * through, as cnc-ddraw always did (2026-10-26). --multicore turns it off. */
+    if (!g_multicore) {
+        DWORD_PTR proc, sys;
+        if (GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) && proc)
+            SetProcessAffinityMask(GetCurrentProcess(), proc & (~proc + 1));   /* lowest core */
+    }
     SetUnhandledExceptionFilter(crash);
     printf("plasticrecomp host: %u lifted functions\n%s", recomp_dispatch_count, g_exe_line);
 
@@ -527,6 +590,7 @@ static DWORD WINAPI run(LPVOID unused) {
         return 1;
     }
     if (g_watchdog_s) CloseHandle(CreateThread(NULL, 0, watchdog, NULL, 0, NULL));
+    if (g_movie_log) CloseHandle(CreateThread(NULL, 0, movie_status, NULL, 0, NULL));
     printf("  entering 0x%08X\n\n", AM2_ENTRY);
     fflush(stdout);
     native32_call_guest(AM2_ENTRY, 0, NULL);
@@ -550,6 +614,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--route-gdi")) g_route_gdi = 1;
         else if (!strcmp(argv[i], "--cnc-ddraw")) g_cnc_ddraw = 1;
         else if (!strcmp(argv[i], "--dd-trace")) vdd_trace = 1;
+        else if (!strcmp(argv[i], "--movie-log")) g_movie_log = 1;
+        else if (!strcmp(argv[i], "--multicore")) g_multicore = 1;
         else if (!strcmp(argv[i], "--mouse-log")) mouse_log = 1;
         else if (!strcmp(argv[i], "--raw-mouse")) mouse_raw = 1;
         else if (!strcmp(argv[i], "--dplay-check")) return dplay_check();
@@ -565,6 +631,22 @@ int main(int argc, char** argv) {
     _snprintf(g_guest_exe, sizeof g_guest_exe - 1, "%s\\ArmyMen2.exe", g_game_dir);
     _snprintf(g_guest_cmdline, sizeof g_guest_cmdline - 1, "\"%s\"", g_guest_exe);
     if (!check_exe()) return 1;
+
+    /* The game allows one copy: at start it looks for its mutex "ArmyMenMutex"
+     * and, if another copy (this host, or the original exe) holds it, quietly
+     * calls ExitProcess(0) (sub_00469331). From outside that looks like a crash
+     * in the first movie (2026-10-26), so say it instead. */
+    {
+        HANDLE m = OpenMutexA(SYNCHRONIZE, FALSE, "ArmyMenMutex");
+        if (m) {
+            CloseHandle(m);
+            const char* msg = "Army Men II is already running (another plasticrecomp, or the original game).\n"
+                              "Close it first: the game allows only one copy at a time.";
+            fprintf(stderr, "%s\n", msg);
+            MessageBoxA(NULL, msg, "plasticrecomp", MB_ICONINFORMATION);
+            return 1;
+        }
+    }
 
     /* In the launching process this starts the host again with the image's
      * range reserved and never returns; in that child it returns 1. */

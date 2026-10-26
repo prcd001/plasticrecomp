@@ -139,6 +139,24 @@ cheat. None is AI.
      on focus loss.
    - Measured: logo, cinematic and title render; the same frames advance focused or unfocused.
      The owner played to the menus and a submenu: "works fine". `--cnc-ddraw` keeps the old path.
-3. UI layer split plus `ui_scale` keys, still with a 640x480 world.
+3. UI layer split plus `ui_scale` keys, still with a 640x480 world. **Done 2026-10-26, without
+   touching lifted code.** The HUD is opaque fixed rectangles, so the presenter draws the frame as
+   regions (`layout` in `src/host/vddraw.c`):
+   - the battlefield (0,21)-(`BLIT_RECT.right`,480), read live, at the world's fit scale;
+   - the top strip, stretched to the window's full width at the UI scale's height (owner's request);
+   - the panel and edge strip, anchored to the window's right edge.
+   Shift+Plus/Minus step the UI scale by halves from 1 up to the fit scale. The owner's test in Boot
+   Camp: the scaling works, but smaller UI leaves black areas until step 4 fills them.
+   - **Movies froze in the virtual path (owner, 2026-10-26).** `--movie-log` showed the decoder
+     stopping at a random frame, with `SmackWait` saying "hold" forever: the movie clock stalled, while
+     the game and presenter ran on. With cnc-ddraw, movies played identically 4 runs of 4; in the
+     virtual path they stalled 4 runs of 4, presenter switched off or not. cnc-ddraw's `singlecpu=true`
+     pins the process to one core, and smackw32's 1999 audio code races on several. Pinned, 8 of 8
+     played, and the owner confirmed the intro and VIEW MOVIES play through. Now the default (`--multicore` turns it off). The presenter is capped at 60 fps, since
+     it shares that core. Measured game speed equals the cnc-ddraw path.
+   - **"Crash at the first video" was the single-instance guard:** a second copy finds
+     `ArmyMenMutex` and calls `ExitProcess(0)` (`sub_00469331`) silently, and test runs were
+     colliding with the owner's. The host now checks the mutex first and says so. Closing the window
+     exits cleanly (`WM_CLOSE`, `WM_DESTROY`, `ExitProcess(0)`), so nothing lingers.
 4. World size = window / zoom, plus zoom keys, the input spaces and the camera clamp.
 5. Measure pools and performance at 1080p and 4K, then decide on caps.

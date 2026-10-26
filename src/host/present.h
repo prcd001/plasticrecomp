@@ -22,6 +22,17 @@ int  present_init(HWND hwnd);
  * vsync. The palette texture is only rewritten when pal differs from the last one. */
 void present_frame(const uint8_t* pixels, int pitch, int w, int h, const PALETTEENTRY pal[256]);
 
+/* A piece of the frame drawn at its own place and scale: source rect in frame pixels,
+ * destination rect in client pixels. */
+typedef struct { int sx, sy, sw, sh; int dx, dy, dw, dh; } present_region_t;
+
+/* As present_frame, but drawing only the given regions, in order (later ones on top;
+ * sampling never crosses a region's source rect). NULL/0 regions = the whole frame,
+ * letterboxed. present_window_to_frame then maps through the topmost region under the
+ * point, or the whole-frame letterbox when the point is in none of them. */
+void present_frame_regions(const uint8_t* pixels, int pitch, int w, int h, const PALETTEENTRY pal[256],
+                           const present_region_t* regions, int nregions);
+
 /* 0 nearest, 1 sharp-bilinear (default). Takes effect on the next present_frame. */
 void present_set_filter(int mode);
 

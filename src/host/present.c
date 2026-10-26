@@ -46,17 +46,18 @@ static const char k_hlsl[] =
 "Texture2D<float4> palette   : register(t1);\n"
 "cbuffer params : register(b0) {\n"
 "    float2 origin; float2 inv_scale; int2 size; float prescale; int mode;\n"
+"    int2 src_lo; int2 src_hi;\n"   /* the region's source rect: sampling stays inside it */
 "};\n"
 "float4 vs(uint id : SV_VertexID) : SV_Position {\n"
 "    float2 p = float2((id << 1) & 2, id & 2);\n"
 "    return float4(p * float2(2, -2) + float2(-1, 1), 0, 1);\n"
 "}\n"
 "float3 colour(int2 p) {\n"
-"    p = clamp(p, int2(0, 0), size - 1);\n"
+"    p = clamp(p, src_lo, src_hi - 1);\n"
 "    return palette.Load(int3((int)frame_idx.Load(int3(p, 0)), 0, 0)).rgb;\n"
 "}\n"
 "float4 ps(float4 pos : SV_Position) : SV_Target {\n"
-"    float2 t = (pos.xy - origin) * inv_scale;\n"
+"    float2 t = (pos.xy - origin) * inv_scale + float2(src_lo);\n"
 "    if (mode == 0) return float4(colour(int2(floor(t))), 1);\n"
 "    float2 tf = floor(t);\n"
 "    float2 d = (t - tf) - 0.5;\n"
@@ -75,7 +76,13 @@ typedef struct {
     int   size[2];
     float prescale;
     int   mode;
+    int   src_lo[2], src_hi[2];
 } params_t;
+
+/* The regions of the last presented frame, for present_window_to_frame. */
+#define MAX_REGIONS 8
+static present_region_t s_regions[MAX_REGIONS];
+static int s_nregions;
 
 static HWND                     s_hwnd;
 static ID3D11Device*            s_dev;
@@ -353,6 +360,14 @@ static int lost(HRESULT hr)
 
 void present_frame(const uint8_t* pixels, int pitch, int w, int h, const PALETTEENTRY pal[256])
 {
+    present_frame_regions(pixels, pitch, w, h, pal, NULL, 0);
+}
+
+void present_frame_regions(const uint8_t* pixels, int pitch, int w, int h, const PALETTEENTRY pal[256],
+                           const present_region_t* regions, int nregions)
+{
+    present_region_t whole;
+    int r;
     D3D11_MAPPED_SUBRESOURCE map;
     D3D11_VIEWPORT vp;
     params_t prm;
@@ -420,29 +435,21 @@ void present_frame(const uint8_t* pixels, int pitch, int w, int h, const PALETTE
     s_dst_h = dh;
     s_last_w = w;
     s_last_h = h;
-    prescale = (int)floor(scale);
-    if (prescale < 1) prescale = 1;
+    (void)prescale;
 
-    prm.origin[0] = (float)s_dst_x;
-    prm.origin[1] = (float)s_dst_y;
-    prm.inv_scale[0] = (float)w / dw;
-    prm.inv_scale[1] = (float)h / dh;
-    prm.size[0] = w;
-    prm.size[1] = h;
-    prm.prescale = (float)prescale;
-    prm.mode = s_filter;
-    ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource*)s_cb, 0, NULL, &prm, 0, 0);
+    /* No regions: the whole frame, letterboxed. */
+    if (!regions || nregions <= 0) {
+        whole.sx = 0, whole.sy = 0, whole.sw = w, whole.sh = h;
+        whole.dx = s_dst_x, whole.dy = s_dst_y, whole.dw = dw, whole.dh = dh;
+        regions = &whole;
+        nregions = 1;
+    }
+    if (nregions > MAX_REGIONS) nregions = MAX_REGIONS;
+    memcpy(s_regions, regions, (size_t)nregions * sizeof *regions);
+    s_nregions = nregions;
 
-    /* Draw. */
     ID3D11DeviceContext_OMSetRenderTargets(s_ctx, 1, &s_rtv, NULL);
     ID3D11DeviceContext_ClearRenderTargetView(s_ctx, s_rtv, black);
-    vp.TopLeftX = (float)s_dst_x;
-    vp.TopLeftY = (float)s_dst_y;
-    vp.Width = (float)dw;
-    vp.Height = (float)dh;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
     ID3D11DeviceContext_IASetInputLayout(s_ctx, NULL);
     ID3D11DeviceContext_IASetPrimitiveTopology(s_ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ID3D11DeviceContext_VSSetShader(s_ctx, s_vs, NULL, 0);
@@ -454,7 +461,37 @@ void present_frame(const uint8_t* pixels, int pitch, int w, int h, const PALETTE
         srvs[1] = s_pal_srv;
         ID3D11DeviceContext_PSSetShaderResources(s_ctx, 0, 2, srvs);
     }
-    ID3D11DeviceContext_Draw(s_ctx, 3, 0);
+    /* One pass per region, each with its own scale: the viewport is the region's
+     * destination, the shader maps it back into the region's source rect. */
+    for (r = 0; r < nregions; r++) {
+        const present_region_t* g = &regions[r];
+        double rs;
+        if (g->sw <= 0 || g->sh <= 0 || g->dw <= 0 || g->dh <= 0) continue;
+        rs = (double)g->dw / g->sw;
+        prescale = (int)floor(rs);
+        if (prescale < 1) prescale = 1;
+        prm.origin[0] = (float)g->dx;
+        prm.origin[1] = (float)g->dy;
+        prm.inv_scale[0] = (float)g->sw / g->dw;
+        prm.inv_scale[1] = (float)g->sh / g->dh;
+        prm.size[0] = w;
+        prm.size[1] = h;
+        prm.prescale = (float)prescale;
+        prm.mode = s_filter;
+        prm.src_lo[0] = g->sx;
+        prm.src_lo[1] = g->sy;
+        prm.src_hi[0] = g->sx + g->sw;
+        prm.src_hi[1] = g->sy + g->sh;
+        ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource*)s_cb, 0, NULL, &prm, 0, 0);
+        vp.TopLeftX = (float)g->dx;
+        vp.TopLeftY = (float)g->dy;
+        vp.Width = (float)g->dw;
+        vp.Height = (float)g->dh;
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+        ID3D11DeviceContext_RSSetViewports(s_ctx, 1, &vp);
+        ID3D11DeviceContext_Draw(s_ctx, 3, 0);
+    }
 
     hr = IDXGISwapChain_Present(s_sc, 1, 0);
     if (lost(hr)) recover(hr);
@@ -463,7 +500,19 @@ void present_frame(const uint8_t* pixels, int pitch, int w, int h, const PALETTE
 
 int present_window_to_frame(int cx, int cy, int* fx, int* fy)
 {
-    int x = 0, y = 0, inside = 0;
+    int x = 0, y = 0, inside = 0, r;
+    /* Regions are drawn in order, so the last one containing the point is on top. */
+    for (r = s_nregions - 1; r >= 0; r--) {
+        const present_region_t* g = &s_regions[r];
+        if (cx < g->dx || cx >= g->dx + g->dw || cy < g->dy || cy >= g->dy + g->dh) continue;
+        x = g->sx + (int)floor(((cx - g->dx) + 0.5) * g->sw / g->dw);
+        y = g->sy + (int)floor(((cy - g->dy) + 0.5) * g->sh / g->dh);
+        if (x > g->sx + g->sw - 1) x = g->sx + g->sw - 1;
+        if (y > g->sy + g->sh - 1) y = g->sy + g->sh - 1;
+        if (fx) *fx = x;
+        if (fy) *fy = y;
+        return 1;
+    }
     if (s_last_w > 0 && s_dst_w > 0 && s_dst_h > 0) {
         /* Same mapping as the shader: pixel centre (cx + 0.5) -> texel. */
         x = (int)floor(((cx - s_dst_x) + 0.5) * s_last_w / s_dst_w);

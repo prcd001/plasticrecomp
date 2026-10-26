@@ -5,6 +5,14 @@ A local, private test of static recompilation for Army Men II (The 3DO Company, 
 by Take-Two Interactive, 2K Games or The 3DO Company. "Army Men" is Take-Two's trademark and is
 used here only to say which game this is.
 
+The original 1999 code, lifted to C, runs natively on a 32-bit host. The host adds:
+- its own DirectDraw and a Direct3D 11 presenter, in a resizable window;
+- a mouse that follows the Windows pointer;
+- a HUD that scales separately from the battlefield.
+
+Where the work stands: `docs/HANDOFF.md`. What was measured: `NOTES.md`. The resolution plan:
+`docs/R_hires.md`.
+
 ## Rules
 
 1. **Bring your own copy.** The input is the owner's own retail disc: the English CD's files,
@@ -15,8 +23,9 @@ used here only to say which game this is.
    `src/recomp/gen/`, `work/` and every build output are gitignored, and nothing built from them
    is ever distributed.
 3. **No copy protection is bypassed.** The lift is of the retail exe as it shipped, CD check
-   included. That check runs when SINGLE PLAYER or BOOT CAMP is chosen and wants the disc in a
-   drive. pcrecomp's DRM tools are not used.
+   included. That check runs when SINGLE PLAYER or BOOT CAMP is chosen and wants the disc (or an
+   image of the owner's disc, mounted) in a drive. pcrecomp's DRM tools are not used, and an exe
+   wrapped in Steam's DRM is refused.
 4. **Run `audit_repo.py` before anything is shared.**
    `python third_party/pcrecomp/tools/audit_repo.py .` must report clean.
 
@@ -24,44 +33,69 @@ used here only to say which game this is.
 
 | path | what | in git |
 |---|---|---|
-| `src/host/main.c` | the host: maps the guest at 0x00400000 and runs it on pcrecomp's native32 | yes |
-| `scripts/` | lift scoring, compile check, host build, run and screenshot tools | yes |
+| `src/host/main.c` | the host: maps the guest at 0x00400000 and runs it on pcrecomp's native32; import shims, options, diagnostics | yes |
+| `src/host/vddraw.c` | the virtual DirectDraw (COM objects, DIB-section surfaces), the window, the presenter thread and the HUD/battlefield layout | yes |
+| `src/host/present.c` | the D3D11 presenter: palette lookup in the shader, nearest/sharp-bilinear, regions at different scales | yes |
+| `src/host/mouse.c` | the game's DirectInput mouse, fed from the Windows cursor | yes |
+| `scripts/` | lift (`run_lift.py`), setup for disc/GOG/Steam owners (`setup.ps1`), host build, presenter test, run, screenshot, key and hashing tools | yes |
+| `docs/` | `HANDOFF.md`, `R_hires.md` (resolution research and plan), `PROVENANCE.md` (the disc copies) | yes |
 | `third_party/pcrecomp/` | pcrecomp checkout (MIT), commit in `NOTES.md` | no |
-| `third_party/cnc-ddraw/` | cnc-ddraw v7.1.0.0 (MIT), the windowed DirectDraw wrapper copied into `game/` | no |
+| `third_party/cnc-ddraw/` | cnc-ddraw v7.1.0.0 (MIT), used only with `--cnc-ddraw` | no |
 | `src/recomp/gen/`, `work/`, `build/` | lifted C, analysis output, objects and the host exe | no |
 | `game/` | working copy of the disc's files | no |
 
 ## Build and run
 
-```bat
+From `C:\plasticrecomp`, in PowerShell:
+
+```powershell
 .venv\Scripts\python.exe scripts\run_lift.py game\ArmyMen2.exe src\recomp\gen --report work\table_arms.json
-scripts\build_host.bat
-build\plasticrecomp.exe --watchdog 30
-pwsh scripts\boot_check.ps1          (run in the background, screenshots at 5/12/20/30 s)
+cmd /c scripts\build_host.bat
+cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > C:\plasticrecomp\build\user_run.log 2>&1"
 ```
 
-`scripts/run_lift.py` is pcrecomp's default pipeline plus the jump-table arms it misses
-(see `NOTES.md`); plain `python -m tools` output crashes in memmove. It also records which exe it
-lifted (`recomp_target.h`), and the host refuses to run any other: lift the exe you own, retail or GOG.
+- **Don't relink while the game runs.** Windows locks a running exe, so `build_host.bat` fails to
+  link while the game is open.
+- **Only one copy at a time.** The game allows a single copy (its mutex `ArmyMenMutex`), and the host
+  says so if one is already running.
+- **First-time setup for any owner** (disc, GOG or Steam): `pwsh scripts\setup.ps1 -From <game folder>`.
+  It copies the game into `game\`, puts cnc-ddraw in place, lifts that exe and builds the host. Without
+  `-From` it looks up GOG's and Steam's install records. On the owner's PC always pass `-From`,
+  because it would otherwise find a GOG install the owner does not want used.
+- **`scripts/run_lift.py`** is pcrecomp's default pipeline plus the jump-table arms it misses. Plain
+  `python -m tools` output crashes in memmove. It also records which exe it lifted
+  (`recomp_target.h`), and the host refuses to run any other.
 
-Host options:
+## In the game
+
+| key | what |
+|---|---|
+| Shift+Plus / Shift+Minus | in a mission: HUD smaller / larger, in half steps from 1x up to the window's fit size |
+| Plus / Minus | reserved for battlefield zoom (step 4, not built yet) |
+| Escape | as in the original (skips movies, opens the mission menu) |
+
+## Host options
 
 | option | what |
 |---|---|
 | `--game DIR` | the game folder (default `game`) |
 | `--watchdog S` | report where the guest is after S seconds, then end the run |
 | `--dry` | map and bind only |
-| `--imports` | with `--watchdog`: where each USER32/GDI32/DINPUT import slot really points |
-| `--no-route` | leave USER32 as native32 bound it, skipping cnc-ddraw's window and mouse hooks |
-| `--route-gdi` | also route GDI32 (breaks movie colours; for experiments) |
+| `--cnc-ddraw` | draw through the game folder's ddraw.dll (cnc-ddraw) instead of the host's virtual DirectDraw and D3D11 presenter |
+| `--multicore` | don't pin the process to one CPU core (movies then stall at random frames: smackw32's audio races) |
 | `--raw-mouse` | the game gets DirectInput's raw mouse counts, as in 1999 (default: it follows the Windows cursor) |
 | `--mouse-log` | log the game's mouse device calls and each cursor correction |
-| `--cnc-ddraw` | draw through the game folder's ddraw.dll (cnc-ddraw) instead of the host's virtual DirectDraw and D3D11 presenter |
+| `--movie-log` | every 2 s: movie frames decoded, SmackWait go/hold, frames presented, foreground |
 | `--dd-trace` | log the virtual DirectDraw's surfaces and window messages |
+| `--imports` | with `--watchdog`: where each USER32/GDI32/DINPUT import slot really points |
+| `--no-route` | with `--cnc-ddraw`: leave USER32 as native32 bound it, skipping cnc-ddraw's hooks |
+| `--route-gdi` | with `--cnc-ddraw`: also route GDI32 (breaks movie colours; for experiments) |
+| `--native-trace`, `--callbacks` | native32's per-call traces (huge) |
 | `--dplay-check` | create the game's DirectPlay object and list its connections, then exit |
 
-First-time setup for any owner (disc, GOG or Steam): `pwsh scripts\setup.ps1 -From <game folder>`.
-It copies the game into `game\`, puts cnc-ddraw in place, lifts that exe and builds the host. Without
-`-From` it looks up GOG's and Steam's install records.
-
-See `NOTES.md` for what was measured.
+Test switches (environment variables, for diagnosis only):
+- `PLASTIC_FORCE_LAYOUT=1`: the mission layout applies everywhere.
+- `PLASTIC_UI_HALVES=n`: preset the UI scale to n/2.
+- `PLASTIC_NO_PRESENT=1`, `PLASTIC_NO_SUBCLASS=1`, `PLASTIC_NO_RESTYLE=1`, `PLASTIC_NO_DPI=1`:
+  switch one piece of the virtual path off.
+- `PLASTIC_PRESENT_WARP=1`, `PLASTIC_PRESENT_BLT=1`: presenter fallbacks.
