@@ -56,6 +56,8 @@ Host options:
 | `--route-gdi` | also route GDI32 (breaks movie colours; for experiments) |
 | `--raw-mouse` | the game gets DirectInput's raw mouse counts, as in 1999 (default: it follows the Windows cursor) |
 | `--mouse-log` | log the game's mouse device calls and each cursor correction |
+| `--cnc-ddraw` | draw through the game folder's ddraw.dll (cnc-ddraw) instead of the host's virtual DirectDraw and D3D11 presenter |
+| `--dd-trace` | log the virtual DirectDraw's surfaces and window messages |
 | `--dplay-check` | create the game's DirectPlay object and list its connections, then exit |
 
 First-time setup for any owner (disc, GOG or Steam): `pwsh scripts\setup.ps1 -From <game folder>`.

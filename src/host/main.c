@@ -28,6 +28,7 @@
 #include "recomp_trace.h"
 #include "recomp_target.h"   /* the exe the C was lifted from: scripts/run_lift.py */
 #include "mouse.h"
+#include "vddraw.h"
 
 #define AM2_IMAGE_BASE 0x00400000u
 #define AM2_ENTRY      0x004664C0u   /* the PE entry point: MSVC 6's WinMainCRTStartup */
@@ -158,6 +159,30 @@ static void shim_timeKillEvent(void) {
     g_esp += 4 + 1 * 4;
 }
 
+/* The game's fullscreen path measures its screen with GetSystemMetrics on
+ * WM_SIZE/WM_MOVE and uses the result as the primary's fill rect and a blit
+ * source (winproc.cpp:317-331). cnc-ddraw's hook answered 640x480; with the
+ * virtual DirectDraw the host does. */
+static int g_cnc_ddraw;               /* --cnc-ddraw: the old path, real ddraw.dll from game\ */
+static void shim_GetSystemMetrics(void) {
+    int i = (int)ARG(0), w, h;
+    if (!g_cnc_ddraw && (i == SM_CXSCREEN || i == SM_CYSCREEN)) {
+        vdd_mode(&w, &h);
+        g_eax = (uint32_t)(i == SM_CXSCREEN ? w : h);
+    } else {
+        g_eax = (uint32_t)GetSystemMetrics(i);
+    }
+    g_esp += 4 + 1 * 4;
+}
+
+/* Movies advance only while GetFocus() is the game's window (0x004453C0); in a
+ * window that keeps running in the background (vddraw.c), it always is. */
+static void shim_GetFocus(void) {
+    HWND game = vdd_window();
+    g_eax = (uint32_t)(uintptr_t)(game ? game : GetFocus());
+    g_esp += 4;
+}
+
 static native32_shim_t g_shims[] = {
     { "GetModuleFileNameA", shim_GetModuleFileNameA },
     { "GetCommandLineA", shim_GetCommandLineA },
@@ -166,7 +191,12 @@ static native32_shim_t g_shims[] = {
     { "timeSetEvent", shim_timeSetEvent },
     { "timeKillEvent", shim_timeKillEvent },
     { "DirectInputCreateA", shim_DirectInputCreateA },   /* mouse.c */
+    /* the virtual DirectDraw; left out with --cnc-ddraw (they must stay last) */
+    { "DirectDrawCreate", shim_DirectDrawCreate },       /* vddraw.c */
+    { "GetSystemMetrics", shim_GetSystemMetrics },
+    { "GetFocus", shim_GetFocus },
 };
+#define N_VDD_SHIMS 3
 
 /* ---------------------------------------------------- routing through cnc-ddraw */
 
@@ -344,6 +374,7 @@ static DWORD WINAPI watchdog(LPVOID unused) {
     Sleep(g_watchdog_s * 1000);
     fprintf(stderr, "\n[watchdog] %lu s: in sub_%08X, last native call %s, %u indirect calls\n",
             g_watchdog_s, g_cur_func, g_cur_import, g_icall_count);
+    if (!g_cnc_ddraw) fprintf(stderr, "[watchdog] presenter: %ld frames shown\n", vdd_presented);
     if (g_report_imports) report_imports();
     native32_dump_icalls(8);
     recomp_trace_flush();
@@ -451,6 +482,9 @@ static int check_exe(void) {
 static DWORD WINAPI run(LPVOID unused) {
     (void)unused;
     native32_init();
+    /* Physical pixels for the presenter's window and the cursor mapping, so a
+     * scaled desktop does not blur the picture a second time. */
+    if (!g_cnc_ddraw) SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     SetUnhandledExceptionFilter(crash);
     printf("plasticrecomp host: %u lifted functions\n%s", recomp_dispatch_count, g_exe_line);
 
@@ -463,8 +497,17 @@ static DWORD WINAPI run(LPVOID unused) {
         return 1;
     }
     printf("  mapped %s: 0x%08X-0x%08X\n", g_guest_exe, AM2_IMAGE_BASE, AM2_IMAGE_BASE + span);
-    if (native32_bind(AM2_IMAGE_BASE, g_shims, (int)(sizeof g_shims / sizeof g_shims[0]))) return 1;
-    if (!g_no_route) route_through_host_iat();
+    int nshims = (int)(sizeof g_shims / sizeof g_shims[0]) - (g_cnc_ddraw ? N_VDD_SHIMS : 0);
+    if (native32_bind(AM2_IMAGE_BASE, g_shims, nshims)) return 1;
+    if (g_cnc_ddraw) {
+        /* cnc-ddraw's hooks reach the guest only through the host's import table */
+        if (!g_no_route) route_through_host_iat();
+    } else {
+        /* no cnc-ddraw: the virtual DirectDraw's window and letterbox map the
+         * mouse, and the mouse device must not be exclusive (mouse.c) */
+        mouse_target = vdd_cursor;
+        mouse_nonexclusive = 1;
+    }
     /* the game's cursor: int32 x, y, written only by sub_00426F40 */
     mouse_set_cursor_vars(0x00485464u, 0x00485468u);
     {
@@ -505,6 +548,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--imports")) g_report_imports = 1;
         else if (!strcmp(argv[i], "--no-route")) g_no_route = 1;
         else if (!strcmp(argv[i], "--route-gdi")) g_route_gdi = 1;
+        else if (!strcmp(argv[i], "--cnc-ddraw")) g_cnc_ddraw = 1;
+        else if (!strcmp(argv[i], "--dd-trace")) vdd_trace = 1;
         else if (!strcmp(argv[i], "--mouse-log")) mouse_log = 1;
         else if (!strcmp(argv[i], "--raw-mouse")) mouse_raw = 1;
         else if (!strcmp(argv[i], "--dplay-check")) return dplay_check();

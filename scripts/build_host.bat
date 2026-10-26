@@ -19,7 +19,7 @@ cl /nologo /c %GEN_OPT% /bigobj /MP /w /MT %DEFS% /FIrecomp_funcs.h %INC% /Fobui
 echo [runtime + host] >> build\build.log
 cl /nologo /c /O2 /W3 /MT %DEFS% %INC% /Fobuild\obj\ ^
    %RT%\native32\native32.c %RT%\recomp32\image_loader.c %RT%\recomp32\recomp_trace.c ^
-   src\host\main.c src\host\mouse.c >> build\build.log 2>&1 || goto fail
+   src\host\main.c src\host\mouse.c src\host\vddraw.c src\host\present.c >> build\build.log 2>&1 || goto fail
 rem /BASE and a small /STACK keep 0x00400000 free for the guest image (src\host\main.c).
 echo [link] >> build\build.log
 link /nologo /OUT:build\plasticrecomp.exe /SUBSYSTEM:CONSOLE /BASE:0x60000000 /FIXED:NO ^

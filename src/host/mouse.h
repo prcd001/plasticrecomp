@@ -16,4 +16,12 @@ extern int mouse_raw;
  * following; without them the host tracks the position it has fed. */
 void mouse_set_cursor_vars(uint32_t x_va, uint32_t y_va);
 
+/* Where the Windows cursor is in game pixels. NULL: GetCursorPos through the
+ * host's import table, which cnc-ddraw hooks to answer in game pixels. */
+#include <windows.h>
+extern int (*mouse_target)(POINT* p);
+
+/* Force the game's mouse device non-exclusive (cnc-ddraw does it when present). */
+extern int mouse_nonexclusive;
+
 #endif

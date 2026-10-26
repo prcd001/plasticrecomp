@@ -34,15 +34,19 @@ static LPDIRECTINPUTDEVICEA g_mouse;  /* the game's GUID_SysMouse device */
 typedef HRESULT (STDMETHODCALLTYPE *create_device_fn)(LPDIRECTINPUTA, REFGUID, LPDIRECTINPUTDEVICEA*, LPUNKNOWN);
 typedef HRESULT (STDMETHODCALLTYPE *get_state_fn)(LPDIRECTINPUTDEVICEA, DWORD, LPVOID);
 typedef HRESULT (STDMETHODCALLTYPE *get_data_fn)(LPDIRECTINPUTDEVICEA, DWORD, LPDIDEVICEOBJECTDATA, LPDWORD, DWORD);
+typedef HRESULT (STDMETHODCALLTYPE *set_coop_fn)(LPDIRECTINPUTDEVICEA, HWND, DWORD);
 static create_device_fn prev_create_device;
 static get_state_fn prev_get_state;
 static get_data_fn prev_get_data;
+static set_coop_fn prev_set_coop;
+
+int mouse_nonexclusive;
 
 /* IDirectInputA: QueryInterface, AddRef, Release, CreateDevice (3).
  * IDirectInputDeviceA: ... Acquire (7), Unacquire (8), GetDeviceState (9),
  * GetDeviceData (10), SetDataFormat (11), SetEventNotification (12),
  * SetCooperativeLevel (13). */
-enum { SLOT_CREATE_DEVICE = 3, SLOT_GET_STATE = 9, SLOT_GET_DATA = 10 };
+enum { SLOT_CREATE_DEVICE = 3, SLOT_GET_STATE = 9, SLOT_GET_DATA = 10, SLOT_SET_COOP = 13 };
 
 /* Replace one vtable slot, returning what was there. The vtables live in
  * dinput.dll's read-only data and are shared by every object of the class. */
@@ -122,11 +126,14 @@ static void game_cursor(int* x, int* y) {
     }
 }
 
+int (*mouse_target)(POINT* p);
+
 static void queue_motion(void) {
     if (!g_game_hwnd) g_game_hwnd = FindWindowA("Armymen2", NULL);
     if (!g_game_hwnd || GetForegroundWindow() != g_game_hwnd) return;
     POINT t;
-    if (!GetCursorPos(&t)) return;    /* cnc-ddraw's: game coordinates */
+    /* the virtual DirectDraw's mapping, or cnc-ddraw's GetCursorPos hook */
+    if (mouse_target ? !mouse_target(&t) : !GetCursorPos(&t)) return;
     int ax, ay;
     game_cursor(&ax, &ay);
     LONG dx = t.x - ax, dy = t.y - ay;
@@ -203,6 +210,15 @@ static HRESULT STDMETHODCALLTYPE hook_get_data(LPDIRECTINPUTDEVICEA self, DWORD 
     return hr;
 }
 
+/* The game asks for DISCL_EXCLUSIVE|DISCL_FOREGROUND, which hides the Windows
+ * cursor and stops it moving: the feed above follows that cursor. cnc-ddraw's
+ * hook forced non-exclusive; without cnc-ddraw (the virtual DirectDraw) this does. */
+static HRESULT STDMETHODCALLTYPE hook_set_coop(LPDIRECTINPUTDEVICEA self, HWND hwnd, DWORD flags) {
+    if (self == g_mouse && mouse_nonexclusive)
+        flags = DISCL_NONEXCLUSIVE | DISCL_FOREGROUND;
+    return prev_set_coop(self, hwnd, flags);
+}
+
 static HRESULT STDMETHODCALLTYPE hook_create_device(LPDIRECTINPUTA self, REFGUID guid, LPDIRECTINPUTDEVICEA* dev,
                                                    LPUNKNOWN outer) {
     HRESULT hr = prev_create_device(self, guid, dev, outer);
@@ -212,6 +228,8 @@ static HRESULT STDMETHODCALLTYPE hook_create_device(LPDIRECTINPUTA self, REFGUID
         if (p) prev_get_state = (get_state_fn)p;
         p = patch_slot(g_mouse, SLOT_GET_DATA, (void*)hook_get_data);
         if (p) prev_get_data = (get_data_fn)p;
+        p = patch_slot(g_mouse, SLOT_SET_COOP, (void*)hook_set_coop);
+        if (p) prev_set_coop = (set_coop_fn)p;
         if (mouse_log) fprintf(stderr, "[mouse] game created GUID_SysMouse: device %p\n", (void*)g_mouse);
     }
     return hr;
