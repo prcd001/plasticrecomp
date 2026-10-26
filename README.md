@@ -37,7 +37,7 @@ Where the work stands: `docs/HANDOFF.md`. What was measured: `NOTES.md`. The res
 | `src/host/vddraw.c` | the virtual DirectDraw (COM objects, DIB-section surfaces), the window, the presenter thread and the HUD/battlefield layout | yes |
 | `src/host/present.c` | the D3D11 presenter: palette lookup in the shader, nearest/sharp-bilinear, regions at different scales | yes |
 | `src/host/mouse.c` | the game's DirectInput mouse, fed from the Windows cursor | yes |
-| `scripts/` | lift (`run_lift.py`), setup for disc/GOG/Steam owners (`setup.ps1`), host build, presenter test, run, screenshot, key and hashing tools | yes |
+| `scripts/` | lift (`run_lift.py`), setup for disc/GOG/Steam owners (`setup.ps1`), host build, presenter test, run, screenshot, key and hashing tools, the unattended Boot Camp run (`auto_bootcamp.ps1`, `compare_shots.py`) | yes |
 | `docs/` | `HANDOFF.md`, `R_hires.md` (resolution research and plan), `PROVENANCE.md` (the disc copies) | yes |
 | `third_party/pcrecomp/` | pcrecomp checkout (MIT), commit in `NOTES.md` | no |
 | `third_party/cnc-ddraw/` | cnc-ddraw v7.1.0.0 (MIT), used only with `--cnc-ddraw` | no |
@@ -99,3 +99,22 @@ Test switches (environment variables, for diagnosis only):
 - `PLASTIC_NO_PRESENT=1`, `PLASTIC_NO_SUBCLASS=1`, `PLASTIC_NO_RESTYLE=1`, `PLASTIC_NO_DPI=1`:
   switch one piece of the virtual path off.
 - `PLASTIC_PRESENT_WARP=1`, `PLASTIC_PRESENT_BLT=1`: presenter fallbacks.
+- `PLASTIC_SCRIPT="t:x,y[,click];..."`: drives the game's cursor with no real mouse. From the first
+  step whose time `t` (seconds since the host process started) has passed, the cursor target is game
+  pixel x,y (640x480 menu or mission-screen pixels), whichever window has the foreground. With
+  `,click` a left click (button 0 down, then up on the next poll) follows once the cursor has arrived.
+- `PLASTIC_KEYS="t:KEY;..."`: holds a DirectInput key down for 3 keyboard polls from time `t`. `KEY` is a
+  DIK scancode (decimal or `0x..`) or ESC, ENTER, SPACE, MINUS, EQUALS, F1, P. ESC skips the intro movies.
+
+Unattended test run (needs the disc image mounted at `H:` and no `plasticrecomp.exe` running):
+
+```powershell
+pwsh scripts\auto_bootcamp.ps1 -Tag before -Duration 80 -Shots 12,28,40,60,75
+python scripts\compare_shots.py before after      # Pillow; compares build\screens\before_*s.png with after_*s.png
+```
+
+`scripts\auto_bootcamp.ps1` starts the game with a watchdog, skips the movies (ESC at 6 s and 20 s),
+clicks BOOT CAMP (game pixel 307,142), clicks OK on the "Welcome to Boot Camp!" box (478,225), closes
+the instruction sheet with Space, parks the pointer, takes screenshots at the `-Shots` times into
+`build\screens\<Tag>_<time>s.png`, and kills the game at `-Duration`. The mission is on screen about 35 s
+after launch. Two runs of the same build give pixel-identical screenshots, apart from a few animated pixels.
