@@ -1,0 +1,36 @@
+# --- Never commit game material or anything derived from ArmyMen2.exe ---
+# Lifted C: a derivative of the original program (pcrecomp README, docs/PUBLISHING.md)
+src/recomp/gen/
+# Analysis artefacts and build output (may embed bytes of the binary)
+work/
+build/
+*.obj
+*.lib
+*.pdb
+*.ilk
+# The local working copy of the owner's retail disc files the host runs against (the game
+# writes Options.cfg and saves into its working folder, so it gets a copy of its own)
+game/
+# Run logs and screenshots of the running game (the screenshots are the game's art)
+*.log
+*.png
+# Any copy of game binaries or assets that lands here by accident
+*.exe
+*.EXE
+*.dll
+*.DLL
+*.iso
+*.smk
+*.wav
+*.bmp
+*.dat
+*.amm
+*.atl
+*.ani
+*.sav
+# Third-party tooling checked out locally (pinned commit is recorded in NOTES.md)
+third_party/pcrecomp/
+third_party/cnc-ddraw/
+.venv/
+__pycache__/
+*.pyc
