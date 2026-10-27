@@ -269,8 +269,7 @@ static void queue_motion(void) {
         g_queue[g_queued].ofs = g_click_ofs, g_queue[g_queued++].data = 0;
     }
     scripted = script_target(&t, &click_now);
-    if (!scripted) {
-        g_queued = g_head = 0;
+    if (!scripted) {                        /* (a button-up owed from the last cycle stays queued) */
         if (!g_game_hwnd) g_game_hwnd = FindWindowA("Armymen2", NULL);
         if (!g_game_hwnd || GetForegroundWindow() != g_game_hwnd) return;
         /* the virtual DirectDraw's mapping, or cnc-ddraw's GetCursorPos hook */
@@ -396,7 +395,8 @@ static HRESULT STDMETHODCALLTYPE hook_create_device(LPDIRECTINPUTA self, REFGUID
             g_state_prev[i].vt = vt;
             g_state_prev[i].prev = (get_state_fn)vt[SLOT_GET_STATE];
         }
-        patch_slot(*dev, SLOT_GET_STATE, (void*)hook_get_state);
+        void* old = patch_slot(*dev, SLOT_GET_STATE, (void*)hook_get_state);
+        if (old && !prev_get_state) prev_get_state = (get_state_fn)old;   /* state_prev's fallback for a vtable not in the table */
     }
     return hr;
 }

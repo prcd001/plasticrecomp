@@ -107,16 +107,28 @@ static const void* const g_surf_vtbl[36];
  * the game must (and does) use lPitch. */
 static int g_cap_w, g_cap_h;
 static int g_world_pending;             /* the next offscreen surface created is the world surface */
+static surf_t* g_world;                 /* the world surface (the big offscreen one), once the game has made it */
+
+/* The window can be dragged to any monitor, so the capacity follows the biggest one (not only the primary). */
+static BOOL CALLBACK monitor_size(HMONITOR m, HDC dc, LPRECT r, LPARAM lp) {
+    int* mm = (int*)lp;
+    (void)m; (void)dc;
+    if (r->right - r->left > mm[0]) mm[0] = r->right - r->left;
+    if (r->bottom - r->top > mm[1]) mm[1] = r->bottom - r->top;
+    return TRUE;
+}
 
 static void compute_capacity(void) {
-    int mw = GetSystemMetrics(SM_CXSCREEN), mh = GetSystemMetrics(SM_CYSCREEN);
+    int mm[2] = { 0, 0 };
+    EnumDisplayMonitors(NULL, NULL, monitor_size, (LPARAM)mm);
+    int mw = mm[0] > 0 ? mm[0] : GetSystemMetrics(SM_CXSCREEN), mh = mm[1] > 0 ? mm[1] : GetSystemMetrics(SM_CYSCREEN);
     int wmax = (mw < 3840 ? mw : 3840), hmax = (mh < 2160 ? mh : 2160);
     wmax = (wmax + 15) & ~15, hmax = (hmax + 15) & ~15;
     if (wmax < 640) wmax = 640;
     if (hmax < 480) hmax = 480;
     g_cap_w = wmax + 160;               /* the HUD column beside the largest battlefield */
     g_cap_h = hmax + 21 > 480 ? hmax + 21 : 480;
-    fprintf(stderr, "[ddraw] capacity %dx%d (monitor %dx%d)\n", g_cap_w, g_cap_h, mw, mh);
+    fprintf(stderr, "[ddraw] capacity %dx%d (largest monitor %dx%d)\n", g_cap_w, g_cap_h, mw, mh);
 }
 
 static surf_t* new_surface(int w, int h, DWORD caps, int cap_w, int cap_h) {
@@ -154,6 +166,7 @@ static ULONG WINAPI sf_AddRef(surf_t* s) { return (ULONG)InterlockedIncrement(&s
 static ULONG WINAPI sf_Release(surf_t* s) {
     LONG n = InterlockedDecrement(&s->refs);
     if (n > 0 || s->primary || (g_primary && g_primary->back == s)) return n > 0 ? (ULONG)n : 0;
+    if (s == g_world) g_world = NULL;
     if (s->dc) DeleteDC(s->dc);
     if (s->dib) DeleteObject(s->dib);
     free(s);
@@ -486,6 +499,7 @@ static HRESULT WINAPI dd_CreateSurface(void* t, DDSURFACEDESC* d, surf_t** out, 
         g_world_pending = 0;
         s = new_surface(w, h, caps, big ? g_cap_w : 0, big ? g_cap_h : 0);
         if (!s) return DDERR_OUTOFMEMORY;
+        if (big) g_world = s;
     }
     if (vdd_trace) fprintf(stderr, "[ddraw] CreateSurface caps 0x%lX -> %dx%d (capacity %dx%d) %p\n", caps, s->w, s->h, s->cap_w, s->cap_h, (void*)s);
     *out = s;
@@ -725,7 +739,6 @@ static const void* const g_dd2_vtbl[24] = { DD_COMMON(dd2_SetDisplayMode), dd2_G
  * (Plus / Minus alone are kept for the battlefield zoom of step 4.) */
 #define ADDR_GAME_STATE 0x00511DA4u
 #define ADDR_BLIT_RIGHT 0x00485328u
-#define ADDR_WORLD_SURFACE 0x00503100u  /* the game's world surface (a COM pointer) */
 #define STATE_MISSION 2
 #define STRIP_Y 21                      /* height of the top strip */
 
@@ -890,14 +903,16 @@ static DWORD WINAPI presenter(LPVOID unused) {
     if (getenv("PLASTIC_LOGICAL_PROBE")) sscanf(getenv("PLASTIC_LOGICAL_PROBE"), "%dx%d", &probe_w, &probe_h);
     for (;;) {
         int w, h;
-        if (probe_w && !probe_done && MEM32(ADDR_WORLD_SURFACE)) probe_done = vdd_set_logical(probe_w, probe_h) ? 1 : -1;
+        if (probe_w && !probe_done && g_world) probe_done = vdd_set_logical(probe_w, probe_h) ? 1 : -1;
         EnterCriticalSection(&g_lock);
         surf_t* p = g_primary;
         w = p->w, h = p->h;
-        if ((size_t)w * h <= frame_size)
+        int fits = (size_t)w * h <= frame_size;
+        if (fits)
             for (int y = 0; y < h; y++) memcpy(frame + y * w, p->px + y * p->pitch, (size_t)w);
         if (p->pal) memcpy(pal, p->pal->e, sizeof pal); else memset(pal, 0, sizeof pal);
         LeaveCriticalSection(&g_lock);
+        if (!fits) { Sleep(16); continue; }     /* a mode beyond the capacity: nothing sane to show */
         if (IsIconic(g_hwnd)) { Sleep(50); continue; }
         /* at most 60 frames a second: the game shares one core with this thread
          * (main.c), and it never draws faster than that */
@@ -994,8 +1009,7 @@ int vdd_cursor_at(int cx, int cy, POINT* p) {
  * when a surface lacks the capacity, in which case nothing is changed. */
 int vdd_set_logical(int w, int h) {
     if (!g_primary) return 0;
-    surf_t* world = (surf_t*)(uintptr_t)MEM32(ADDR_WORLD_SURFACE);
-    if (world && world->vtbl != g_surf_vtbl) world = NULL;       /* not one of ours: leave it */
+    surf_t* world = g_world;
     int ok = w > 0 && h > 0 && w <= g_primary->cap_w && h <= g_primary->cap_h &&
              (!g_primary->back || (w <= g_primary->back->cap_w && h <= g_primary->back->cap_h));
     if (ok && world && (w > world->cap_w || h > world->cap_h)) ok = 0;

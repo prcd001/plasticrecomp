@@ -135,6 +135,12 @@ def wrap_pass(out_dir, wrap=WRAP):
             texts[n] = f.read()
     all_defs = {int(m.group(1), 16)
                 for t in texts.values() for m in re.finditer(r'^void sub_([0-9A-F]{8})\(void\) \{', t, re.M)}
+    # A wrapped function's entry instruction (`/* 0x<VA>: ...`) must appear once in all the lifted C: a second
+    # copy means another function was lifted with a copy of this body's start, which the wrapper cannot see.
+    for va in wrap:
+        n_entry = sum(len(re.findall(r'/\* 0x%08X:' % va, t)) for t in texts.values())
+        if n_entry != 1:
+            sys.exit(f'wrap pass: the entry instruction of sub_{va:08X} appears {n_entry} times in the lifted C (expected 1)')
     splits = {}
     for va in wrap:
         pat = re.compile(r'^void sub_%08X\(void\) \{\n' % va, re.M)

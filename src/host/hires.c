@@ -86,6 +86,8 @@ static hires_view_t g_view;
 static int g_active;                    /* the hires geometry is in force (M3 has run in this mission) */
 /* game-thread only */
 static int g_m1, g_m2;                  /* the map load / HUD create of this mission ran with hires geometry */
+static int g_map_hires;                 /* this map was loaded with hires geometry: cleared only by the next map load, not by
+                                         * restore_640, so a side screen that re-creates the HUD (0x0040ADAC) gets it back */
 static int g_wmax, g_hmax, g_a, g_hc;
 static int g_hud_right;
 static int g_geo, g_vw, g_vh;           /* game thread: the hires geometry is applied; the view in game pixels */
@@ -159,9 +161,7 @@ int hires_view(hires_view_t* v) {
     act = g_active;
     if (v) *v = g_view;
     unlock();
-    /* in a mission only: the geometry stays in force until the mouse poll sees the state change, and
-     * the layout should not show a stale frame in the meantime */
-    return act && (int)MEM32(ADDR_STATE) == STATE_MISSION;
+    return act;                         /* restore_640 decides when the geometry ends (state requests, the mouse poll) */
 }
 
 void hires_zoom_step(int dir) {
@@ -209,24 +209,33 @@ static volatile LONG g_loading;         /* from the map load to the first panel 
 
 int hires_loading(void) { return g_loading; }
 
+/* M1's writes: the screen is the whole frame A x Hc, so the surfaces and the tile cache are made for the
+ * largest view. Returns 0 (nothing changed) when a virtual surface lacks the capacity. */
+static int enter_map_geometry(void) {
+    if (!vdd_set_logical(g_a, g_hc)) return 0;
+    MEM32(ADDR_SCREEN_W) = (uint32_t)g_a, MEM32(ADDR_SCREEN_H) = (uint32_t)g_hc;
+    set_mem_rect(ADDR_CLIP, 0, 0, g_a, g_hc);
+    set_mem_rect(ADDR_BLIT, 0, STRIP_H, g_wmax, STRIP_H + g_hmax);
+    g_m1 = 1, g_m2 = 0, g_geo = 0;
+    lock();
+    g_active = 0;
+    unlock();
+    g_applied_zoom = -1;
+    return 1;
+}
+
 void sub_0042C440(void) {
     static volatile LONG seen;
     first_hit(&seen, "map load 0x0042C440");
     g_loading = 1;
+    g_map_hires = 0;
     if (g_enabled) {
         int cw, ch;
         vdd_capacity(&cw, &ch);
         g_a = cw, g_hc = ch;
         g_wmax = cw - COLUMN_W, g_hmax = ch - STRIP_H;
-        if (vdd_set_logical(g_a, g_hc)) {
-            MEM32(ADDR_SCREEN_W) = (uint32_t)g_a, MEM32(ADDR_SCREEN_H) = (uint32_t)g_hc;
-            set_mem_rect(ADDR_CLIP, 0, 0, g_a, g_hc);
-            set_mem_rect(ADDR_BLIT, 0, STRIP_H, g_wmax, STRIP_H + g_hmax);
-            g_m1 = 1, g_m2 = 0, g_geo = 0;
-            lock();
-            g_active = 0;
-            unlock();
-            g_applied_zoom = -1;
+        if (enter_map_geometry()) {
+            g_map_hires = 1;
             fprintf(stderr, "[hires] M1 map load: SCREEN %dx%d, state %d\n", g_a, g_hc, (int)MEM32(ADDR_STATE));
         } else {
             fprintf(stderr, "[hires] a surface lacks the capacity: hires disabled\n");
@@ -241,6 +250,8 @@ void sub_0042C440(void) {
 void sub_00413480(void) {
     static volatile LONG seen;
     first_hit(&seen, "HUD create 0x00413480");
+    if (g_enabled && !g_m1 && g_map_hires && enter_map_geometry())      /* a side screen's return: this map's geometry again */
+        fprintf(stderr, "[hires] M1 again for a HUD re-create: SCREEN %dx%d, state %d\n", g_a, g_hc, (int)MEM32(ADDR_STATE));
     if (g_enabled && g_m1) {
         uint32_t save_w = MEM32(ADDR_SCREEN_W), save_right = MEM32(ADDR_BLIT + 8);
         MEM32(ADDR_SCREEN_W) = (uint32_t)g_a;
@@ -299,7 +310,7 @@ void sub_004143A0(void) {
     if (!g_geo) { sub_004143A0_lifted(); return; }
     clip_full();
     sub_004143A0_lifted();
-    clip_view();
+    if (g_geo) clip_view();          /* not if restore_640 ran inside (via a state request) */
 }
 
 void sub_00412FE0(void) {
@@ -308,7 +319,7 @@ void sub_00412FE0(void) {
     if (!g_geo) { sub_00412FE0_lifted(); return; }
     clip_full();
     sub_00412FE0_lifted();
-    clip_view();
+    if (g_geo) clip_view();          /* not if restore_640 ran inside (via a state request) */
 }
 
 void sub_00424CA0(void) {
@@ -317,7 +328,7 @@ void sub_00424CA0(void) {
     if (!g_geo) { sub_00424CA0_lifted(); return; }
     clip_full();
     sub_00424CA0_lifted();
-    clip_view();
+    if (g_geo) clip_view();          /* not if restore_640 ran inside (via a state request) */
 }
 
 /* The game asks for a state change (sub_00424AD0(new state)) and applies it at the end of the frame;
@@ -327,7 +338,7 @@ void sub_00424CA0(void) {
 void sub_00424AD0(void) {
     static volatile LONG seen;
     first_hit(&seen, "state request 0x00424AD0");
-    if (g_geo) {
+    if (g_geo || g_m1) {
         int want = (int)MEM32(g_esp + 4);
         if (want != STATE_MISSION) {
             fprintf(stderr, "[hires] state %d requested (now %d): back to 640x480 geometry\n", want, (int)MEM32(ADDR_STATE));
@@ -361,14 +372,16 @@ static void panel_update(void) {
         MEM32(ADDR_BLIT + 8) = (uint32_t)g_hud_right;
         MEM32(ADDR_SCREEN_W) = (uint32_t)g_a;
         sub_004193C0();
-        int hr = (int)MEM32(ADDR_BLIT + 8);
-        MEM32(ADDR_BLIT + 8) = view_right;
-        MEM32(ADDR_SCREEN_W) = ww;
-        if (hr != g_hud_right) {
-            g_hud_right = hr;
-            lock();
-            g_view.hud_right = hr;
-            unlock();
+        if (g_geo) {                    /* restore_640 may have run inside: its values must stand */
+            int hr = (int)MEM32(ADDR_BLIT + 8);
+            MEM32(ADDR_BLIT + 8) = view_right;
+            MEM32(ADDR_SCREEN_W) = ww;
+            if (hr != g_hud_right) {
+                g_hud_right = hr;
+                lock();
+                g_view.hud_right = hr;
+                unlock();
+            }
         }
     }
 }
