@@ -42,7 +42,15 @@ static const IID pr_IID_ID3D11Texture2D =
  * (libretro interpolation/sharp-bilinear) squeezes the blend into a band of 1/prescale texel
  * around each texel edge, then blends the 4 nearest palette colours with those weights. Smooth is the
  * same blend with no band (plain bilinear on colours). Scanlines is sharp-bilinear with each source
- * row darkened towards its edges (only where a source row is at least 2 screen pixels tall). */
+ * row darkened towards its edges (only where a source row is at least 2 screen pixels tall).
+ *
+ * Minification (a region shown smaller than its source, inv_scale > 1: the zoom-out steps 0.5x and 0.25x, a small
+ * window's HUD): the bilinear taps would skip texels (at 0.25x, 12 of every 16) and the picture would shimmer when it
+ * scrolls. So every mode except nearest takes the AREA average instead: the exact box of source texels one screen pixel
+ * covers (fractional coverage at its edges), palette-looked-up first, so no index is ever averaged. At exactly 0.5x
+ * it is the mean of 2x2 texels, at 0.25x of 4x4; in between, the area weights make it a smooth, alias-free
+ * reduction. A box of width 1 is bilinear, so the two filters join without a seam at scale 1. Nearest stays
+ * nearest (it picks one texel, as its name says). */
 static const char k_hlsl[] =
 "Texture2D<uint>   frame_idx : register(t0);\n"
 "Texture2D<float4> palette   : register(t1);\n"
@@ -58,9 +66,24 @@ static const char k_hlsl[] =
 "    p = clamp(p, src_lo, src_hi - 1);\n"
 "    return palette.Load(int3((int)frame_idx.Load(int3(p, 0)), 0, 0)).rgb;\n"
 "}\n"
+"float3 area(float2 t) {\n"
+"    float2 f = max(inv_scale, 1.0);\n"                        /* the footprint of one screen pixel, in texels (>= 1) */
+"    float2 lo = t - 0.5 * f, hi = t + 0.5 * f;\n"
+"    int2 i0 = int2(floor(lo)), i1 = min(int2(ceil(hi)), i0 + 6);\n"
+"    float3 sum = 0; float wsum = 0;\n"
+"    for (int y = i0.y; y < i1.y; y++) {\n"
+"        float wy = min(hi.y, y + 1.0) - max(lo.y, (float)y);\n"
+"        for (int x = i0.x; x < i1.x; x++) {\n"
+"            float w = wy * (min(hi.x, x + 1.0) - max(lo.x, (float)x));\n"
+"            sum += w * colour(int2(x, y)); wsum += w;\n"
+"        }\n"
+"    }\n"
+"    return sum / wsum;\n"
+"}\n"
 "float4 ps(float4 pos : SV_Position) : SV_Target {\n"
 "    float2 t = (pos.xy - origin) * inv_scale + float2(src_lo);\n"
 "    if (mode == 0) return float4(colour(int2(floor(t))), 1);\n"
+"    if (inv_scale.x > 1.001 || inv_scale.y > 1.001) return float4(area(t), 1);\n"
 "    float2 tf = floor(t);\n"
 "    float2 d = (t - tf) - 0.5;\n"
 "    float  pre = (mode == 2) ? 1.0 : prescale;\n"

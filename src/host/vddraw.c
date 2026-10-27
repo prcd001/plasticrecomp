@@ -109,34 +109,30 @@ static int g_cap_w, g_cap_h;
 static int g_world_pending;             /* the next offscreen surface created is the world surface */
 static surf_t* g_world;                 /* the world surface (the big offscreen one), once the game has made it */
 
-/* The window can be dragged to any monitor, so the capacity follows the biggest one (not only the primary). */
-static BOOL CALLBACK monitor_size(HMONITOR m, HDC dc, LPRECT r, LPARAM lp) {
-    int* mm = (int*)lp;
-    (void)m; (void)dc;
-    if (r->right - r->left > mm[0]) mm[0] = r->right - r->left;
-    if (r->bottom - r->top > mm[1]) mm[1] = r->bottom - r->top;
-    return TRUE;
-}
-
+/* The capacity is the largest battlefield the host ever lays out: 3840x2160 (what the game's camera and tile
+ * cache take safely, docs/R_step4_plan.md section 0), whatever the monitor. The zoom steps below 1x make the view
+ * window / zoom, which on a 1080p monitor is already 3840x2160 at 0.5x, so a capacity taken from the monitor
+ * would cap them. Cost: the three big surfaces (primary, back buffer, world surface) are (3840+160) x (2160+21)
+ * = 8.7 MB each (plus 64 spare rows), the game's tile cache about as much, the presenter's frame copy and its
+ * texture 8.7 MB each: about 55 MB in all, allocated once and mostly untouched while the view is smaller
+ * (the pages of a DIB section are committed when first written). PLASTIC_CAP=WxH (test switch) sets a different
+ * "largest battlefield" (at least 640x480, at most 3840x2160). */
 static void compute_capacity(void) {
-    int mm[2] = { 0, 0 };
-    EnumDisplayMonitors(NULL, NULL, monitor_size, (LPARAM)mm);
-    int mw = mm[0] > 0 ? mm[0] : GetSystemMetrics(SM_CXSCREEN), mh = mm[1] > 0 ? mm[1] : GetSystemMetrics(SM_CYSCREEN);
-    {   /* test switch PLASTIC_CAP=WxH: pretend the largest monitor is that big (capacity only: the window keeps its size) */
+    int wmax = 3840, hmax = 2160;
+    {   /* test switch PLASTIC_CAP=WxH */
         int cw, ch;
         const char* e = getenv("PLASTIC_CAP");
         if (e && sscanf(e, "%dx%d", &cw, &ch) == 2 && cw >= 640 && ch >= 480) {
-            fprintf(stderr, "[ddraw] PLASTIC_CAP: pretending the largest monitor is %dx%d\n", cw, ch);
-            mw = cw, mh = ch;
+            fprintf(stderr, "[ddraw] PLASTIC_CAP: the largest battlefield is %dx%d\n", cw, ch);
+            wmax = cw < 3840 ? cw : 3840, hmax = ch < 2160 ? ch : 2160;
         }
     }
-    int wmax = (mw < 3840 ? mw : 3840), hmax = (mh < 2160 ? mh : 2160);
     wmax = (wmax + 15) & ~15, hmax = (hmax + 15) & ~15;
     if (wmax < 640) wmax = 640;
     if (hmax < 480) hmax = 480;
     g_cap_w = wmax + 160;               /* the HUD column beside the largest battlefield */
     g_cap_h = hmax + 21 > 480 ? hmax + 21 : 480;
-    fprintf(stderr, "[ddraw] capacity %dx%d (largest monitor %dx%d)\n", g_cap_w, g_cap_h, mw, mh);
+    fprintf(stderr, "[ddraw] capacity %dx%d (largest battlefield %dx%d)\n", g_cap_w, g_cap_h, wmax, hmax);
 }
 
 static surf_t* new_surface(int w, int h, DWORD caps, int cap_w, int cap_h) {
@@ -545,7 +541,7 @@ static DWORD g_notice_until;
 static int g_show_fps;
 static char g_shot_dir[MAX_PATH] = "screenshots";   /* main.c sets <game folder>\screenshots: the game changes the working folder */
 void vdd_set_screenshot_dir(const char* dir) { strncpy(g_shot_dir, dir, MAX_PATH - 1); g_shot_dir[MAX_PATH - 1] = 0; }
-static char g_fps_text[96];
+static char g_fps_text[160];
 static volatile LONG g_dump_req;        /* F10 with PLASTIC_DUMP_VIEW set: the presenter also writes the raw view (below) */
 volatile LONG vdd_present_us_max;       /* the longest gap between two presents, microseconds (reset when read) */
 static int g_fullscreen, g_fs_wanted;
@@ -558,6 +554,8 @@ static void notice(const char* fmt, const char* a) {
     g_notice_until = GetTickCount() + 2000;
     fprintf(stderr, "[host] %s\n", g_notice);
 }
+
+void vdd_notice(const char* text) { notice("%s", text); }
 
 static void update_title(void) {
     static DWORD t0;
@@ -577,8 +575,13 @@ static void update_title(void) {
         LONG p = vdd_presented, f = vdd_flips, mx = InterlockedExchange(&vdd_present_us_max, 0);
         double dt = (now - t0) / 1000.0;
         if (t0 && dt < 5.0)
-            _snprintf(g_fps_text, sizeof g_fps_text - 1, "%.1f fps  %.1f ms (max %.1f)  game %.0f loops/s",
-                      (p - p0) / dt, (p - p0) ? dt * 1000.0 / (p - p0) : 0.0, mx / 1000.0, (f - f0) / dt);
+        {
+            hires_view_t hv;
+            char zt[64] = "";
+            if (hires_view(&hv) && !hv.dialog) _snprintf(zt, sizeof zt - 1, "  zoom %.3gx view %dx%d", hv.eff, hv.ww, hv.wh);
+            _snprintf(g_fps_text, sizeof g_fps_text - 1, "%.1f fps  %.1f ms (max %.1f)  game %.0f loops/s%s",
+                      (p - p0) / dt, (p - p0) ? dt * 1000.0 / (p - p0) : 0.0, mx / 1000.0, (f - f0) / dt, zt);
+        }
         t0 = now, p0 = p, f0 = f;
     }
     strcpy(buf, g_title_base);

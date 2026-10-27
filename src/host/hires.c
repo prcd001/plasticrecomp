@@ -79,12 +79,18 @@
 #define STRIP_H         21
 #define COLUMN_W        160
 
-static const double k_zoom[] = { 1.0, 1.5, 2.0, 3.0, 4.0 };
+/* The zoom steps (the battlefield view is the window / zoom). Below 1 the picture is shrunk by the presenter: the
+ * view is bigger than the window, up to the surface capacity (3840x2160, see vddraw.c). plastic.ini stores the value
+ * (zoom_x), not the index, so adding steps never changes what a saved setting means. */
+static const double k_zoom[] = { 0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0 };
 #define N_ZOOM ((int)(sizeof k_zoom / sizeof *k_zoom))
+#define ZOOM_DEFAULT 2                  /* index of 1x */
+static const double k_zoom_v1[] = { 1.0, 1.5, 2.0, 3.0, 4.0 };     /* what plastic.ini's old `zoom = index` meant */
+#define N_ZOOM_V1 5
 
 static int g_enabled = HIRES_DEFAULT;
 static int g_log;
-static volatile LONG g_zoom_want;       /* zoom index asked for (keys, PLASTIC_ZOOM) */
+static volatile LONG g_zoom_want = ZOOM_DEFAULT;   /* zoom index asked for (keys, PLASTIC_ZOOM) */
 
 static CRITICAL_SECTION g_cs;           /* g_view and its flag, game thread vs presenter and mouse */
 static volatile LONG g_cs_ready;
@@ -148,9 +154,9 @@ static DWORD WINAPI log_thread(LPVOID unused) {
         LONG pres = vdd_presented, fr = vdd_flips, us = InterlockedExchange(&vdd_flip_us_sum, 0),
              mx = InterlockedExchange(&vdd_flip_us_max, 0), lp = g_loops;
         LONG n = fr - last_frames;
-        fprintf(stderr, "[hires-log] %s view %dx%d zoom %.1f frame %.2f ms (max %.1f; %.1f game frames/s, %ld loops/s) "
+        fprintf(stderr, "[hires-log] %s view %dx%d zoom %.2f (shown %.3f) frame %.2f ms (max %.1f; %.1f game frames/s, %ld loops/s) "
                 "presenter %.1f fps eye %d,%d (%08X %08X) state %d/%d/%d\n",
-                act ? "on " : "off", act ? v.ww : 0, act ? v.wh : 0, act ? v.zoom : 0.0, n ? us / 1000.0 / n : 0.0,
+                act ? "on " : "off", act ? v.ww : 0, act ? v.wh : 0, act ? v.zoom : 0.0, act ? v.eff : 0.0, n ? us / 1000.0 / n : 0.0,
                 mx / 1000.0, n / 2.0, (long)((lp - last_loops) / 2), (pres - last_pres) / 2.0,
                 (int)(int16_t)MEM16(ADDR_EYE), (int)(int16_t)MEM16(ADDR_EYE + 2), MEM32(ADDR_EYE), MEM32(ADDR_EYE + 4),
                 (int)MEM32(ADDR_STATE), (int)MEM32(0x00511DBCu), (int)MEM32(0x00511DC0u));
@@ -169,24 +175,34 @@ void hires_init(int log) {
     const char* e = getenv("PLASTIC_HIRES");
     if (e && *e) g_enabled = *e != '0';
     e = getenv("PLASTIC_ZOOM");
-    if (e && *e) {
-        int z = atoi(e);
-        g_zoom_want = z < 0 ? 0 : z >= N_ZOOM ? N_ZOOM - 1 : z;
-    }
+    if (e && *e) hires_set_zoom_value(atof(e));       /* a value in x: 0.25, 0.5, 1, 1.5, 2, 3, 4 (nearest step) */
     g_log = log;
     e = getenv("PLASTIC_VIEW");
     if (e && sscanf(e, "%dx%d", &g_force_w, &g_force_h) != 2) g_force_w = g_force_h = 0;
     lock(); unlock();
     if (g_log) CloseHandle(CreateThread(NULL, 0, log_thread, NULL, 0, NULL));
     if (g_force_w) fprintf(stderr, "[hires] PLASTIC_VIEW: the view is sized for a %dx%d window\n", g_force_w, g_force_h);
-    fprintf(stderr, "[hires] %s (PLASTIC_HIRES=%s), first zoom index %ld\n", g_enabled ? "enabled" : "disabled",
-            getenv("PLASTIC_HIRES") ? getenv("PLASTIC_HIRES") : "unset", g_zoom_want);
+    fprintf(stderr, "[hires] %s (PLASTIC_HIRES=%s), first zoom %gx\n", g_enabled ? "enabled" : "disabled",
+            getenv("PLASTIC_HIRES") ? getenv("PLASTIC_HIRES") : "unset", k_zoom[g_zoom_want]);
 }
 
 void hires_disable(void) { g_enabled = 0; }
 void hires_set_enabled(int on) { g_enabled = on != 0; }
-void hires_set_zoom(int index) { g_zoom_want = index < 0 ? 0 : index >= N_ZOOM ? N_ZOOM - 1 : index; }
-int  hires_get_zoom(void) { return (int)g_zoom_want; }
+void hires_set_zoom_value(double z) {
+    int best = ZOOM_DEFAULT;
+    double bd = 1e9;
+    for (int i = 0; i < N_ZOOM; i++) {
+        double d = fabs(k_zoom[i] - z);
+        if (d < bd) bd = d, best = i;
+    }
+    g_zoom_want = best;
+}
+void hires_set_zoom_v1(int index) { hires_set_zoom_value(k_zoom_v1[index < 0 ? 0 : index >= N_ZOOM_V1 ? N_ZOOM_V1 - 1 : index]); }
+double hires_get_zoom_value(void) { return k_zoom[g_zoom_want]; }
+int  hires_get_zoom_v1(void) {          /* the older builds' index of the nearest step at or above 1x */
+    for (int i = 0; i < N_ZOOM_V1; i++) if (k_zoom_v1[i] >= k_zoom[g_zoom_want] - 1e-9) return i;
+    return N_ZOOM_V1 - 1;
+}
 
 int hires_view(hires_view_t* v) {
     int act;
@@ -205,14 +221,106 @@ int hires_zoom_keys_ok(void) {
     return !g_dialog && !MEM32(0x005125B8u);
 }
 
-void hires_zoom_step(int dir) {
-    LONG cur = g_zoom_want, n = cur + dir;
-    if (n < 0) n = 0;
-    if (n >= N_ZOOM) n = N_ZOOM - 1;
-    if (n != cur) {
-        InterlockedExchange(&g_zoom_want, n);
-        fprintf(stderr, "[hires] zoom key: index %ld (%.1fx)\n", n, k_zoom[n]);
+/* The battlefield view for a client area and a zoom step (the one place that decides it):
+ *  - the zoom asked for, ze = z, is raised to what keeps the view within the surfaces (Wmax x Hmax = 3840x2160),
+ *    jointly in both directions, so the view keeps the window's shape and still fills it (0.25x on a 1080p window
+ *    is 0.5x: 3840x2160, not a smaller picture in black bars);
+ *  - the view is ceil(window / ze), made even, and shrunk to the map (-2) if the map is smaller;
+ *  - eff is what the window really shows: window / view (the scale of the fitted picture when the map caps it). */
+typedef struct { int ww, wh; double ze, eff; int surf_capped, map_capped; } calc_t;
+static int even(int v);
+
+static int g_cap_w, g_cap_h;            /* the surfaces' capacity (all threads read it; set by the first call) */
+static void calc_view(int cw, int ch, int zi, calc_t* c) {
+    double z = k_zoom[zi], ze = z;
+    int wmax = g_wmax, hmax = g_hmax;
+    if (!wmax) {                        /* before the first map load: the capacity the surfaces will have */
+        if (!g_cap_w) vdd_capacity(&g_cap_w, &g_cap_h);
+        wmax = g_cap_w - COLUMN_W, hmax = g_cap_h - STRIP_H;
     }
+    if (cw / ze > wmax + 1e-6) ze = (double)cw / wmax;
+    if (ch / ze > hmax + 1e-6) ze = (double)ch / hmax;
+    int ww = (int)ceil(cw / ze - 1e-6), wh = (int)ceil(ch / ze - 1e-6);
+    int map_w = (int)MEM32(ADDR_MAP_MIN_X + 8) - (int)MEM32(ADDR_MAP_MIN_X);
+    int map_h = (int)MEM32(ADDR_MAP_MIN_X + 12) - (int)MEM32(ADDR_MAP_MIN_X + 4);
+    int want_w = ww, want_h = wh;
+    ww = (ww + 1) & ~1, wh = (wh + 1) & ~1;
+    if (ww > wmax) ww = wmax;
+    if (wh > hmax) wh = hmax;
+    if (map_w > 64 && ww > map_w - 2) ww = map_w - 2;
+    if (map_h > 64 && wh > map_h - 2) wh = map_h - 2;
+    ww = even(ww), wh = even(wh);
+    if (ww < 64) ww = 64;
+    if (wh < 64) wh = 64;
+    c->ww = ww, c->wh = wh, c->ze = ze;
+    c->surf_capped = ze > z + 1e-9;
+    c->map_capped = ww < want_w - 1 || wh < want_h - 1;
+    if (c->map_capped) {                /* one uniform scale, centred (the presenter's fit) */
+        double a = (double)cw / ww, b = (double)ch / wh;
+        c->eff = a < b ? a : b;
+    } else {
+        c->eff = ((double)cw / ww + (double)ch / wh) / 2;
+    }
+}
+
+/* The client area the view is sized for (PLASTIC_VIEW overrides it); 0 when there is no window yet. */
+static int client_size(int* cw, int* ch) {
+    RECT rc = { 0, 0, 0, 0 };
+    HWND w = vdd_window();
+    if (!w || !GetClientRect(w, &rc) || rc.right <= 0 || rc.bottom <= 0) return 0;
+    if (g_force_w > 0) rc.right = g_force_w, rc.bottom = g_force_h;
+    *cw = rc.right, *ch = rc.bottom;
+    return 1;
+}
+
+static void fmt_zoom(char* out, size_t n, double z) {        /* 0.5, 0.44, 1.5, 2 */
+    char t[24];
+    _snprintf(t, sizeof t - 1, "%.2f", z);
+    t[sizeof t - 1] = 0;
+    size_t l = strlen(t);
+    while (l > 1 && t[l - 1] == '0' && strchr(t, '.')) t[--l] = 0;
+    if (l > 1 && t[l - 1] == '.') t[--l] = 0;
+    _snprintf(out, n - 1, "%s", t);
+    out[n - 1] = 0;
+}
+
+/* One step along the list, skipping the steps that would show the same effective zoom as now (a 1080p window can show
+ * 0.5x at most, so there 0.25x is no step; a small map caps the view the same way): no dead key presses.
+ * Applied at the next panel update. */
+void hires_zoom_step(int dir) {
+    LONG cur = g_zoom_want, n;
+    int cw, ch;
+    calc_t c0, cn;
+    char msg[160], a[24], b[24];
+    if (!client_size(&cw, &ch)) {       /* no window yet: plain steps */
+        n = cur + dir;
+        if (n >= 0 && n < N_ZOOM) InterlockedExchange(&g_zoom_want, n);
+        return;
+    }
+    calc_view(cw, ch, (int)cur, &c0);
+    for (n = cur + dir; n >= 0 && n < N_ZOOM; n += dir) {
+        calc_view(cw, ch, (int)n, &cn);
+        if (fabs(cn.eff - c0.eff) > 0.004 * c0.eff) break;
+    }
+    if (n < 0 || n >= N_ZOOM) {
+        fmt_zoom(a, sizeof a, c0.eff);
+        _snprintf(msg, sizeof msg - 1, "Zoom %sx: the %s", a, dir < 0 ? "furthest out" : "closest in");
+        msg[sizeof msg - 1] = 0;
+        vdd_notice(msg);
+        return;
+    }
+    InterlockedExchange(&g_zoom_want, n);
+    fmt_zoom(a, sizeof a, cn.eff);
+    fmt_zoom(b, sizeof b, k_zoom[n]);
+    if (cn.surf_capped)
+        _snprintf(msg, sizeof msg - 1, "Zoom %sx (view %dx%d, the most there is room for)", a, cn.ww, cn.wh);
+    else if (cn.map_capped)
+        _snprintf(msg, sizeof msg - 1, "Zoom %sx (%sx asked: the map ends)", a, b);
+    else
+        _snprintf(msg, sizeof msg - 1, "Zoom %sx (view %dx%d)", a, cn.ww, cn.wh);
+    msg[sizeof msg - 1] = 0;
+    vdd_notice(msg);
+    fprintf(stderr, "[hires] zoom key: step %ld (%sx) -> effective %sx, view %dx%d\n", n, b, a, cn.ww, cn.wh);
 }
 
 /* Back to the 640x480 geometry the menus and movies run in (.data's own values). */
@@ -325,19 +433,9 @@ void sub_00413480(void) {
 static int even(int v) { return v & ~1; }
 
 static void apply_geometry(int cw, int ch, int zi) {
-    double z = k_zoom[zi];
-    int ww = (int)ceil(cw / z), wh = (int)ceil(ch / z);
-    int map_w = (int)MEM32(ADDR_MAP_MIN_X + 8) - (int)MEM32(ADDR_MAP_MIN_X);
-    int map_h = (int)MEM32(ADDR_MAP_MIN_X + 12) - (int)MEM32(ADDR_MAP_MIN_X + 4);
-    int want_w = ww, want_h = wh;
-    ww = (ww + 1) & ~1, wh = (wh + 1) & ~1;
-    if (ww > g_wmax) ww = g_wmax;
-    if (wh > g_hmax) wh = g_hmax;
-    if (map_w > 64 && ww > map_w - 2) ww = map_w - 2;
-    if (map_h > 64 && wh > map_h - 2) wh = map_h - 2;
-    ww = even(ww), wh = even(wh);
-    if (ww < 64) ww = 64;
-    if (wh < 64) wh = 64;
+    calc_t c;
+    calc_view(cw, ch, zi, &c);
+    int ww = c.ww, wh = c.wh;
     MEM32(ADDR_SCREEN_W) = (uint32_t)ww;
     MEM32(ADDR_SCREEN_H) = (uint32_t)(STRIP_H + wh);
     set_mem_rect(ADDR_BLIT, 0, STRIP_H, ww, STRIP_H + wh);
@@ -347,13 +445,16 @@ static void apply_geometry(int cw, int ch, int zi) {
     MEM32(ADDR_REDRAW) = 1;
     lock();
     g_view.ww = ww, g_view.wh = wh, g_view.a = g_a, g_view.hc = g_hc, g_view.hud_right = g_hud_right;
-    g_view.capped = ww < want_w - 1 || wh < want_h - 1;
-    g_view.zoom = z;
+    g_view.capped = c.map_capped;
+    g_view.zoom = c.ze;                 /* the zoom the view was made for: the asked one unless the surfaces cap it */
+    g_view.eff = c.eff;
     g_active = 1;
     unlock();
     g_applied_zoom = zi, g_applied_cw = cw, g_applied_ch = ch;
-    fprintf(stderr, "[hires] M3 geometry: client %dx%d, zoom %.1f -> view %dx%d%s (map %dx%d, A %d Hc %d, panel %d)\n", cw, ch, z,
-            ww, wh, g_view.capped ? " (capped)" : "", map_w, map_h, g_a, g_hc, g_hud_right);
+    fprintf(stderr, "[hires] M3 geometry: client %dx%d, zoom %g -> view %dx%d, effective zoom %.3f%s%s (map %dx%d, A %d Hc %d, panel %d)\n",
+            cw, ch, k_zoom[zi], ww, wh, c.eff, c.surf_capped ? " (surfaces cap)" : "", c.map_capped ? " (map caps)" : "",
+            (int)MEM32(ADDR_MAP_MIN_X + 8) - (int)MEM32(ADDR_MAP_MIN_X), (int)MEM32(ADDR_MAP_MIN_X + 12) - (int)MEM32(ADDR_MAP_MIN_X + 4),
+            g_a, g_hc, g_hud_right);
 }
 
 /* ------------------------------------------------------------------- dialogs
@@ -463,13 +564,10 @@ static void panel_update(void) {
     }
     InterlockedIncrement(&g_loops);
     {
-        RECT rc = { 0, 0, 0, 0 };
-        HWND w = vdd_window();
-        int zi = (int)g_zoom_want;
-        if (w && GetClientRect(w, &rc) && rc.right > 0 && rc.bottom > 0 && g_force_w > 0) rc.right = g_force_w, rc.bottom = g_force_h;
-        if (w && rc.right > 0 && rc.bottom > 0 &&
-            (!g_active || zi != g_applied_zoom || rc.right != g_applied_cw || rc.bottom != g_applied_ch))
-            apply_geometry(rc.right, rc.bottom, zi);
+        int zi = (int)g_zoom_want, cw, ch;
+        if (client_size(&cw, &ch) &&
+            (!g_active || zi != g_applied_zoom || cw != g_applied_cw || ch != g_applied_ch))
+            apply_geometry(cw, ch, zi);
         else if (!g_active)
             apply_geometry(640, 480, zi);   /* no window yet (cannot happen in a mission) */
     }

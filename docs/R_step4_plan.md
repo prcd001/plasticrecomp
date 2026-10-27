@@ -189,3 +189,34 @@ Measured (Boot Camp: 1609 of 1700 objects; campaign map1 missions: 330 of 400):
   redraw after a load or zoom). The game loop spins (2900 loops/s at 1280x960, 1300 at 4K scrolling), so these are per-frame costs,
   not a frame rate: far under 16.7 ms.
 - Not measured: the real 4K display (this PC is 1080p; the presenter uploads 4000x2181 = 8.7 MB per frame and held 60 fps).
+
+
+## 10. Zoom out: 0.5x and 0.25x (2026-10-27)
+
+Steps are now {0.25, 0.5, 1, 1.5, 2, 3, 4}. What changed and why:
+- **Capacity** (vddraw.c compute_capacity): always 3840x2160 (+160 column, +21 strip = 4000x2181), not taken from the monitor: 0.5x on a
+  1080p window is already a 3840x2160 view. Cost: primary, back buffer and world surface 8.7 MB each, the game's tile cache about the same,
+  the presenter's frame copy and its texture 8.7 MB each, about 55 MB, allocated once. Measured on this PC (1080p-class window): the game's
+  Flip interval is unchanged (0.37-0.40 ms at 1920x1080 as before), presenter 58-62 fps, the mission is up at the same time after launch.
+- **View** (hires.c calc_view, the one place that decides it): the zoom asked for is raised, jointly in both directions, until the view fits
+  3840x2160, so the view keeps the window's shape and the window stays filled (before, Ww and Hh were capped one by one and the fit left black
+  bars). A 1080p window: 0.5x = 3840x2160, 0.25x -> 0.5x; 1280x960: 0.25x -> 0.444x (2880x2160); a maximised 2560x1411: 0.25x and 0.5x -> 0.666x
+  (3840x2118). The map caps the view too (map - 2) and is then shown as before, one uniform scale, centred.
+- **Effective zoom** = window / view (hires_view_t.eff); in the title notice ("Zoom 0.44x (view 2880x2160, the most there is room for)"),
+  in F3's line, in `--hires-log` ("zoom 0.25 (shown 0.444)"), and in the `M3 geometry` log line. hires_zoom_step skips steps whose effective
+  zoom equals the present one (tolerance 0.4 %), both ways, so there is no dead key press; at the end it says "furthest out" / "closest in".
+- **Presenter** (present.c): a region shown smaller than its source (inv_scale > 1) takes the exact AREA average of the source texels a
+  screen pixel covers, after the palette lookup, in sharp-bilinear, smooth and scanlines modes (plain bilinear would read 2x2 of every 4x4 at 0.25x and
+  shimmer on scroll). At 0.5x aligned it is a 2x2 box. A box of width 1 is bilinear, so there is no seam at scale 1. Nearest stays nearest (one texel).
+  Up to 25 palette lookups a pixel; no measurable cost (presenter 58-62 fps at 1080p and 2560x1411 windows). The HUD regions use it too if a
+  window is small enough to shrink them.
+- **plastic.ini**: `zoom_x = <value>` is the setting now; `zoom = <old index>` is still read when `zoom_x` is absent (old index 0..4 = 1, 1.5, 2, 3, 4)
+  and is written as the older builds' index of the nearest step at or above 1x. `PLASTIC_ZOOM` is a value now, not an index.
+- **Limits at these views**: depth list peaks 424 at 3840x2160 (1080p window, 0.5x), 466 at 3840x2118; no leaf ever full (the repair in the DrawMapObjects
+  wrapper does its splits: 4..12 per redraw); pools and dirty list as before. Frame time 0.55-0.60 ms per Flip at 3840x2160.
+- **Input**: the mouse mapping is the presenter's regions, which already took any scale: a click at client (631,762) at 0.444x landed on game pixel
+  (1420,1736) = 631/0.444, 762/0.444+21, and Sarge walked there with the camera following; a click on the minimap (panel region, unaffected
+  by zoom) moved the camera to that spot. At 0.5x one game pixel is two screen pixels, so the pointer's resolution on the map is two screen pixels.
+  Edge scrolling stays at the game's 1000 world px/s, i.e. 500 screen px/s at 0.5x and 444 at 0.444x (not changed).
+- **Known**: the game draws its pointer into the battlefield, so it shrinks with the zoom (a few pixels at 0.25x; at 4x it was always big). A cursor
+  overlay at constant size would need the presenter to draw the sprite separately (its pixels cannot be told from the map's): not done.

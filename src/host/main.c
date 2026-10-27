@@ -248,7 +248,8 @@ static int env_int(const char* name, int* out) {
 /* Start-up: the ini's values go to the pieces that own them; then the environment, then the flags. */
 static void apply_config(void) {
     int v;
-    if (cfg_has("zoom")) hires_set_zoom(cfg_get_int("zoom", 0));
+    if (cfg_has("zoom")) hires_set_zoom_v1(cfg_get_int("zoom", 0));      /* older files: an index into 1x 1.5x 2x 3x 4x */
+    if (cfg_has("zoom_x")) hires_set_zoom_value(atof(cfg_get_str("zoom_x")));   /* newer: the value, which wins */
     if (cfg_has("ui_scale")) vdd_set_ui_halves(cfg_get_int("ui_scale", 0));
     if (cfg_has("hires")) hires_set_enabled(cfg_get_int("hires", 1));
     if (cfg_has("vsync")) present_set_vsync(cfg_get_int("vsync", 1));
@@ -272,8 +273,8 @@ static void apply_config(void) {
     if (g_flag_fullscreen >= 0) vdd_set_fullscreen(g_flag_fullscreen);
     if (g_flag_scaling >= 0) present_set_mode(g_flag_scaling);
     /* (PLASTIC_ZOOM, PLASTIC_HIRES and PLASTIC_UI_HALVES are read where they were always read: hires_init, the layout) */
-    fprintf(stderr, "[config] start: scaling %s, fullscreen %d, vsync %d, zoom %d, ui_scale %d, confine %d, edge_scroll %d\n",
-            present_mode_name(present_get_mode()), vdd_get_fullscreen(), present_get_vsync(), hires_get_zoom(), vdd_get_ui_halves(),
+    fprintf(stderr, "[config] start: scaling %s, fullscreen %d, vsync %d, zoom %gx, ui_scale %d, confine %d, edge_scroll %d\n",
+            present_mode_name(present_get_mode()), vdd_get_fullscreen(), present_get_vsync(), hires_get_zoom_value(), vdd_get_ui_halves(),
             vdd_get_confine(), vdd_get_edge_scroll());
 }
 
@@ -281,7 +282,13 @@ static void apply_config(void) {
  * is killed (the watchdog, a crash) writes nothing. */
 static void save_config(void) {
     if (g_cnc_ddraw) return;
-    cfg_set_int("zoom", hires_get_zoom());
+    {   /* the value (zoom_x), and `zoom` as the older builds' index so they still read something sane */
+        char t[16];
+        _snprintf(t, sizeof t - 1, "%g", hires_get_zoom_value());
+        t[sizeof t - 1] = 0;
+        cfg_set_str("zoom_x", t);
+        cfg_set_int("zoom", hires_get_zoom_v1());
+    }
     cfg_set_int("ui_scale", vdd_get_ui_halves());
     cfg_set_str("scaling", present_mode_name(present_get_mode()));
     cfg_set_int("fullscreen", vdd_get_fullscreen());

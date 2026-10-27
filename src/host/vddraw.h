@@ -17,12 +17,15 @@ int vdd_cursor(POINT* p);
 int vdd_cursor_at(int cx, int cy, POINT* p);   /* the same for a given client pixel (negative: from the right / bottom) */
 
 /* The size of the big surfaces (primary, back buffer, world surface) as the game sees it, within the
- * capacity they were allocated at (a function of the monitor: the largest battlefield plus a 160-px
- * HUD column wide, and the 21-px strip plus that battlefield high). vdd_set_logical changes it under
+ * capacity they were allocated at (3840x2160 for the battlefield, whatever the monitor, because the
+ * smallest zoom, 0.25x, shows four times the window; plus a 160-px HUD column wide and the 21-px strip high). vdd_set_logical changes it under
  * the presenter's lock; 0 if a surface cannot hold it (nothing is changed). */
 int  vdd_set_logical(int w, int h);
 void vdd_get_logical(int* w, int* h);
 int  vdd_capacity(int* w, int* h);
+
+/* A line in the title bar for 2 s (and the log), like the scaling mode's name. Any thread. */
+void vdd_notice(const char* text);
 
 /* Borderless fullscreen (F11, Alt+Enter): set before the window exists, it is applied when the game makes it. */
 int  vdd_get_fullscreen(void);

@@ -36,7 +36,7 @@ Where the work stands: `docs/HANDOFF.md`. What was measured: `NOTES.md`. The res
 |---|---|---|
 | `src/host/main.c` | the host: maps the guest at 0x00400000 and runs it on pcrecomp's native32; import shims, options, diagnostics | yes |
 | `src/host/vddraw.c` | the virtual DirectDraw (COM objects, DIB-section surfaces), the window, the presenter thread and the HUD/battlefield layout | yes |
-| `src/host/present.c` | the D3D11 presenter: palette lookup in the shader, nearest/sharp-bilinear, regions at different scales | yes |
+| `src/host/present.c` | the D3D11 presenter: palette lookup in the shader, nearest/sharp-bilinear, area average when a region is shrunk (zoom below 1x), regions at different scales | yes |
 | `src/host/hires.c` | step 4: host wrappers that run in front of lifted functions (map load, HUD create, panel update, HudPaint, cursor draw, edge scroll, state requests) and make the battlefield as big as the window: the game's screen geometry, zoom, the HUD column | yes |
 | `src/host/config.c` | `plastic.ini`: read at start, written on exit |  yes |
 | `src/host/mouse.c` | the game's DirectInput mouse, fed from the Windows cursor | yes |
@@ -77,13 +77,13 @@ cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > 
 | key | what |
 |---|---|
 | Shift+Plus / Shift+Minus | in a mission: HUD smaller / larger, in half steps from 1x up to the window's fit size |
-| Plus / Minus | in a mission: battlefield zoom in / out through 1x, 1.5x, 2x, 3x, 4x (1x: one game pixel is one screen pixel, so a 1080p window shows 1920x1050 pixels of map) |
+| Plus / Minus | in a mission: battlefield zoom in / out through 0.25x, 0.5x, 1x, 1.5x, 2x, 3x, 4x (1x: one game pixel is one screen pixel, so a 1080p window shows 1920x1050 pixels of map; 0.5x shows four times the map, in a 3840x2160 view that the presenter shrinks to the window). The view never exceeds 3840x2160 (the surfaces' size) or the map, so a window can show 0.5x at most on 1080p (3840x2160 = 2 x 1920x1080): there 0.25x asks for more than there is room for, and the zoom is raised in both directions to what fits (a 1280x960 window: 0.44x, a 2560x1440 one: 0.67x), so the window stays filled. The title bar names the zoom you really get (window / view) for 2 s, and F3's line carries it with the view's size. A step that would show the same zoom as the present one is skipped (Minus on a 1080p window at 0.5x says "furthest out" and does nothing), so no key press is dead. Zooming out shrinks the game's pointer along with the map (it is drawn into the battlefield): at 0.25x it is a few pixels |
 | Escape | as in the original (skips movies, opens the mission menu). The mission's own screens (game menu, audio, controls, save, load, the HQ message, the instruction sheet and F1's map) are shown as the 640x480 picture they are built for, scaled like the menus, over the battlefield's top-left corner |
 | F12 (Shift+F12 backwards) | scaling mode, for the battlefield and the HUD alike: sharp-bilinear (default), nearest (whole-number scales only: the 640x480 picture of the menus, movies and dialogs and the HUD at the largest whole multiple that fits, black bars for the rest; the battlefield at a whole zoom (1x, 2x, 3x, 4x) in whole-pixel steps, up to zoom-1 black pixels at a window edge; the 1.5x zoom and a capped view stay smooth fit), smooth bilinear, scanlines (sharp-bilinear with each source row dimmed towards its edges; visible from 2x scale up). The title bar names the mode for 2 s |
 | F8 | mouse confine on / off: in a mission, the Windows cursor is kept inside the window's client area (ClipCursor). It is let go in the menus, in the mission's dialogs (game menu, audio, controls, the sheet), when the window loses the foreground (Alt-Tab, a click elsewhere), when minimised, and when the game ends. On by default; the title bar says "Mouse confine on/off" |
 | F9 | edge scrolling on / off. Off: the game's cursor is held 4 px inside its clamp rectangle, where the edge scroll (3 px) cannot fire, so the map scrolls only by the minimap and by following Sarge (the game has no keyboard scrolling). On by default |
 | F11, Alt+Enter | borderless fullscreen on the window's monitor and back; leaving restores the window's rect (maximised or not). The battlefield re-fits the new size |
-| F3 | FPS readout in the title bar: presenter fps, frame time (average, max) and the game loop's rate. (Borderless fullscreen has no title bar, so the notices and this line are not visible there) |
+| F3 | FPS readout in the title bar: presenter fps, frame time (average, max), the game loop's rate and, in a mission, the effective zoom and the view's size. (Borderless fullscreen has no title bar, so the notices and this line are not visible there) |
 | F10, PrintScreen | screenshot: a PNG of the picture as presented (palette lookup and scaling done, window-sized) in `game\screenshots\plastic_<date>_<time>.png`; the title bar names the file |
 
 The host's keys never reach the game: they are cleared from the DirectInput keyboard state the game reads
@@ -126,7 +126,8 @@ and writes back to the file it read (or next to the exe if there was none). `key
 `;` start a comment; unknown keys are ignored and kept.
 
 ```ini
-zoom = 0              # battlefield zoom index: 0..4 = 1x, 1.5x, 2x, 3x, 4x
+zoom_x = 1            # battlefield zoom as a value: 0.25 0.5 1 1.5 2 3 4 (the nearest step)
+zoom = 0              # the older builds' index (0..4 = 1x 1.5x 2x 3x 4x), kept for them; read only when zoom_x is absent
 ui_scale = 0          # HUD scale in half steps (2 = 1x, 3 = 1.5x ...); 0 = follows the window
 scaling = sharp-bilinear   # nearest | sharp-bilinear | smooth | scanlines (or 0..3)
 fullscreen = 0        # borderless fullscreen
@@ -141,7 +142,7 @@ For one run, environment variables override the file (`PLASTIC_ZOOM`, `PLASTIC_U
 
 Test switches (environment variables, for diagnosis only):
 - `PLASTIC_HIRES=0`: the battlefield stays 640x480 as in the original (the old layout; `1` turns the feature on).
-  `PLASTIC_ZOOM=n`: the first zoom index (0..4 = 1x, 1.5x, 2x, 3x, 4x).
+  `PLASTIC_ZOOM=z`: the first zoom, a value (0.25, 0.5, 1, 1.5, 2, 3, 4; the nearest step; it was an index 0..4 before the zoom-out steps).
 - `PLASTIC_DUMP_LOAD=dir`: while a mission loads, write the presented frame as `dir\load_n_WxH_stateS.bmp` every 100 ms.
 - `PLASTIC_FORCE_LAYOUT=1`: the mission layout applies everywhere.
 - `PLASTIC_UI_HALVES=n`: preset the UI scale to n/2.
@@ -155,8 +156,8 @@ Test switches (environment variables, for diagnosis only):
 - `PLASTIC_LOGICAL_PROBE=WxH`: once the game has made its world surface, set the primary, back buffer and
   world surface's logical size to W x H (within the capacity), to check that menus, movies and the HUD
   still show the 640x480 picture.
-- `PLASTIC_CAP=WxH`: pretend the largest monitor is W x H (capacity only: the surfaces are made for the battlefield that
-  monitor would allow, up to 3840x2160; the window keeps its size). `PLASTIC_VIEW=WxH`: size the battlefield as if the
+- `PLASTIC_CAP=WxH`: the largest battlefield is W x H (at least 640x480, at most 3840x2160, the default whatever the
+  monitor: the zoom-out steps need it even on a 1080p screen; the surfaces are made for that, the window keeps its size). `PLASTIC_VIEW=WxH`: size the battlefield as if the
   window's client area were W x H (the presenter then scales it into the real window). Together they run a 4K view on any
   PC: `PLASTIC_CAP=3840x2160 PLASTIC_VIEW=3840x2160`. `PLASTIC_DUMP_VIEW=dir`: F10 / PrintScreen also write the battlefield
   as the game drew it, 1:1, to `dir\view_<n>_<w>x<h>.bmp` (a window cannot be bigger than the monitor, so this is how a 4K

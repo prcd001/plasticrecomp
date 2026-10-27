@@ -11,13 +11,17 @@ typedef void (*hires_fn)(void);
 hires_fn hires_lookup(uint32_t va);
 
 /* Start-up: reads PLASTIC_HIRES (0 turns the feature off, 1 on; unset = the built-in default) and
- * PLASTIC_ZOOM (first zoom index, 0..4), starts the --hires-log thread when log != 0. */
+ * PLASTIC_ZOOM (the first zoom, a value: 0.25 0.5 1 1.5 2 3 4), starts the --hires-log thread when log != 0. */
 void hires_init(int log);
 /* Before hires_init: the settings from plastic.ini (PLASTIC_HIRES / PLASTIC_ZOOM still override them). */
 void hires_set_enabled(int on);
-void hires_set_zoom(int index);
-/* The zoom index now in force (0..4), for plastic.ini. */
-int  hires_get_zoom(void);
+/* The zoom as a value in x (the nearest step of 0.25 0.5 1 1.5 2 3 4), plastic.ini's `zoom_x`. */
+void   hires_set_zoom_value(double z);
+double hires_get_zoom_value(void);
+/* plastic.ini's older `zoom = index` (0..4 = 1x 1.5x 2x 3x 4x): the same zoom value as it always meant. The getter gives
+ * that index for the nearest step at or above 1x, so an older build reading the file still gets a sane zoom. */
+void hires_set_zoom_v1(int index);
+int  hires_get_zoom_v1(void);
 /* The feature off for the whole run (e.g. with --cnc-ddraw, which has no virtual surfaces). */
 void hires_disable(void);
 
@@ -26,12 +30,14 @@ void hires_disable(void);
  *   ww, wh    world view size in game pixels (the world is src (0,21,ww,wh) of the frame)
  *   a, hc     the frame's logical size (HUD column [a-160 .. a) at the right)
  *   hud_right left edge of the panel in the frame (a-160 open .. a-16 closed)
- *   capped    the view is smaller than the window needs at this zoom (map or surface limit):
- *             the world is then drawn at one uniform scale instead of filling the window
+ *   capped    the view is smaller than the window needs at this zoom (the map is smaller): the world is then
+ *             drawn at one uniform scale instead of filling the window. (The surfaces' limit, 3840x2160, is no
+ *             "capped": the zoom is raised in both directions until the view fits, so the window stays filled)
  *   dialog    a widget screen of the mission (game menu, audio, controls) is up: the game is in the 640x480
  *             geometry and the frame's 640x480 corner is the picture
- *   zoom      the zoom factor */
-typedef struct { int ww, wh, a, hc, hud_right, capped, dialog; double zoom; } hires_view_t;
+ *   zoom      the zoom the view was made for: the one asked for, or the larger one the surfaces' limit forces
+ *   eff       the zoom the window really shows: window / view (below 1 the presenter shrinks the view) */
+typedef struct { int ww, wh, a, hc, hud_right, capped, dialog; double zoom, eff; } hires_view_t;
 int hires_view(hires_view_t* v);
 
 /* Nonzero from a mission's map load until its first panel update (the loading screen; test dumps). */
@@ -45,7 +51,9 @@ int hires_mission_serial(void);
  * mission dialog is up. Also tells mouse.c which keys to hide from the game's keyboard. */
 int hires_zoom_keys_ok(void);
 
-/* Zoom one step along {1, 1.5, 2, 3, 4} (dir +1 zooms in). Applied at the next panel update. */
+/* Zoom one step along {0.25, 0.5, 1, 1.5, 2, 3, 4} (dir +1 zooms in), skipping the steps that would show the same
+ * effective zoom as now (the view is capped at 3840x2160 and at the map's size): no dead key presses. A notice names
+ * the result (vdd_notice). Applied at the next panel update. */
 void hires_zoom_step(int dir);
 
 /* From the mouse poll (game thread): goes back to 640x480 geometry once a mission has ended. */
