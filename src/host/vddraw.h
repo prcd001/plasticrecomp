@@ -54,12 +54,6 @@ int  vdd_get_edge_scroll(void);
 void vdd_set_edge_scroll(int on);
 void vdd_release_cursor(void);          /* any thread: ClipCursor(NULL) if the host set a clip */
 
-/* The HUD layout: 0 classic (the panel column at the window's right), 1 the bottom console (F7, plastic.ini hud_layout). The name is for
- * notices; vdd_bottom_layout_possible says whether the present window and mission can show the console (else it stays classic). */
-int  vdd_get_hud_layout(void);
-void vdd_set_hud_layout(int layout);
-const char* vdd_hud_layout_name(int layout);
-int  vdd_bottom_layout_possible(void);
 
 /* Where F10 / PrintScreen put their PNGs (default: "screenshots" in the working folder). */
 void vdd_set_screenshot_dir(const char* dir);

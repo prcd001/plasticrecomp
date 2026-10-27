@@ -643,7 +643,6 @@ void vdd_set_fullscreen(int on) { set_fullscreen(on); }
  * at once, the ExitProcess shim and the crash and watchdog reports release it. A clip left behind by a dead
  * process is reset by Windows, but the cursor is the user's, so every exit path lets go itself. */
 static volatile LONG g_confine = 1, g_edge_scroll = 1;
-static volatile LONG g_hud_layout;      /* 0 classic, 1 bottom (see "the bottom HUD layout" below) */
 static volatile LONG g_clip_on;
 static RECT g_clip_rc;
 int  vdd_get_confine(void) { return (int)g_confine; }
@@ -699,17 +698,6 @@ static int host_key(UINT msg, WPARAM wp, LPARAM lp) {
     }
     if (wp == VK_F8) {
         if (!rep) { vdd_set_confine(!g_confine); notice("Mouse confine %s", g_confine ? "on" : "off"); update_confine(); }
-        return 1;
-    }
-    if (wp == VK_F7) {
-        if (!rep) {
-            vdd_set_hud_layout(!g_hud_layout);
-            char t[96];
-            _snprintf(t, sizeof t - 1, "%s%s", vdd_hud_layout_name((int)g_hud_layout),
-                      g_hud_layout && !vdd_bottom_layout_possible() ? " (not in this window or mission: classic for now)" : "");
-            t[sizeof t - 1] = 0;
-            notice("HUD layout: %s", t);
-        }
         return 1;
     }
     if (wp == VK_F9) {
@@ -861,86 +849,11 @@ typedef struct {
     int ready;                          /* the dialog's picture may show */
     int opaque;                         /* a full-screen sheet: dim the world behind */
     int game_state;
-    int ovf;                            /* the squad panel has members in its lower two rows (squad_probe) */
-    int mask_idx;                       /* the palette index that covers what lies below the map (the console base's, else the darkest) */
-    int fill_idx;                       /* the palette index of the console base: the empty grid cell's background */
+    int fill_idx;                       /* the palette index of the bands that fill what lies beyond the map (the darkest entry) */
 } pstate_t;
 
 
-/* Does the squad panel's lower two member rows (panel rows [403-76,403)) hold anything? The empty grid is two or three palette indices (the cell's
- * background, the grid lines); a member's icon, bar and stars add many. Also the console base's colour: the most common index of the empty slice.
- * Debounced (a squad that shrinks keeps the rows for 1.5 s). PLASTIC_HUD_PIX=1 logs the distinct count every 2 s (calibration). */
-static void squad_probe(const uint8_t* frame, int w, const hires_view_t* hv, int* ovf, int* fill) {
-    static int state, hold, fill_idx = -1, lastlog;
-    int hist[256] = { 0 };
-    int x0 = hv->panel_x + 4, x1 = hv->panel_x + 144 - 4;
-    for (int y = 21 + 403 - 76; y < 21 + 403 - 2; y++) {
-        const uint8_t* row = frame + (size_t)y * w;
-        for (int x = x0; x < x1; x++) hist[row[x]]++;
-    }
-    int nd = 0, top = 0, topc = 0;
-    for (int i = 0; i < 256; i++) {
-        if (hist[i] >= 6) nd++;
-        if (hist[i] > topc) topc = hist[i], top = i;
-    }
-    if (nd > 11) state = 1, hold = 90;       /* the empty grid has 7 (measured); a member's icon, bar and stars add more */
-    else if (hold > 0) hold--;
-    else state = 0;
-    if (!state || fill_idx < 0) fill_idx = top;
-    if (getenv("PLASTIC_HUD_PIX")) {
-        DWORD now = GetTickCount();
-        if (now - lastlog > 2000) { lastlog = now; fprintf(stderr, "[hudpix] lower squad rows: %d distinct indices (>=6 px), top index %d x%d, ovf %d fill %d\n", nd, top, topc, state, fill_idx); }
-    }
-    *ovf = state, *fill = fill_idx;
-}
-
-/* ---- the bottom HUD layout (F7, hud_layout in plastic.ini): a StarCraft-style console along the window's bottom edge
- *
- * Nothing in the game changes: the HUD column is drawn into the frame as ever (x from the panel's left edge, y 21..480) and the
- * presenter only decides where each piece of it is shown. The battlefield region is untouched (it fills the window, the camera
- * follows Sarge to the window's centre, which is well above the console), the console's pieces are drawn over it, and the cursor
- * mapping (present_window_to_frame: the topmost region under the pointer) sends every click on a piece back to the game pixel it
- * came from, so the game's own hit tests do the rest (minimap recentring, weapon slots, RALLY / HOLD, squad members).
- *
- * The slices are rows of the panel's own bitmap (hires.c hud_measure checks the widget tree they were measured on), cut where the
- * bitmap has a seam: the panel (144 px wide, y 21..480 of the frame) is
- *     [0,148) the minimap     [148,230) SARGE (weapons)     [230,410) SQUAD: header [0,22), portrait + stats inset [21,97),
- *     member grid [97,180)    [410,459) COMMANDS            and the 16-px edge strip (SARGE / armour / AUTO bars) beside it.
- * The console, left to right, all bottoms on the window's bottom edge:
- *     MINIMAP | SQUAD: header + member grid | PORTRAIT: the header's top rows, the inset, the bottom frame | SARGE weapons over COMMANDS | edge strip
- * The two middle panels are put together from two slices each (the SQUAD panel is one dark inset with the portrait above the grid;
- * cutting it at the grid's top line gives each half a frame by taking the header's top and the panel's bottom). They sit together,
- * centred between the two corner blocks. The edge strip stays vertical at the window's right edge, as in the classic layout.
- * Heights in game pixels: minimap 148, SARGE + COMMANDS 131, SQUAD 105, portrait 89, so the world shows above the middle ones. */
-#define PNL_W 144
 #define MAX_REGIONS 32          /* present.c's limit */
-#define EDGE_W 16
-static volatile LONG g_bottom_active;   /* the last frame was laid out with the console */
-static volatile LONG g_console_lo, g_console_hi;     /* its regions' indices (the panels, not the world, the top strip or the edge strip) */
-int  vdd_get_hud_layout(void) { return (int)g_hud_layout; }
-void vdd_set_hud_layout(int v) { InterlockedExchange(&g_hud_layout, v == 1); }
-const char* vdd_hud_layout_name(int v) { return v == 1 ? "bottom console" : "classic (right column)"; }
-
-/* The console's scale: the UI scale, at most what fits the window's width (three panels and the edge strip: 448 game pixels) and 40 %
- * of its height (for the tallest piece the squad panel can be, 180 pixels: header, four rows of members, frame). In nearest mode a
- * whole number. 0 = the window is too small for it at 1:1: classic. */
-#define SQ_MAX_H 180
-static double bottom_scale(int cw, int ch, double u) {
-    double wmax = cw / (3.0 * PNL_W + EDGE_W), hmax = 0.40 * ch / SQ_MAX_H;
-    if (u > wmax) u = wmax;
-    if (u > hmax) u = hmax;
-    if (present_get_mode() == PRESENT_NEAREST) u = floor(u + 1e-9);
-    return u >= 1.0 ? u : 0.0;
-}
-/* Can the bottom layout be shown for this window and view? (for the F7 notice) */
-int vdd_bottom_layout_possible(void) {
-    hires_view_t hv;
-    RECT rc;
-    if (!g_hwnd || !GetClientRect(g_hwnd, &rc) || !hires_view(&hv)) return 0;
-    double s = present_fit_scale(rc.right, rc.bottom, 640, 480), u = g_ui_halves ? g_ui_halves / 2.0 : s;
-    if (u > s) u = s;
-    return hv.hud_ok && bottom_scale(rc.right, rc.bottom, u) > 0;
-}
 
 static int rr(double v) { return (int)floor(v + 0.5); }
 static int put_region(present_region_t* rg, int n, int sx, int sy, int sw, int sh, int dx, int dy, int dw, int dh) {
@@ -948,37 +861,14 @@ static int put_region(present_region_t* rg, int n, int sx, int sy, int sw, int s
     rg[n].dx = dx, rg[n].dy = dy, rg[n].dw = dw, rg[n].dh = dh;
     return n + 1;
 }
-/* A panel put together from slices of the column, stacked upward from the window's bottom edge: seg[i] = {source row in the panel, rows};
- * the first is the topmost. Each slice's destination edges are the rounded cumulative heights, so no row is lost or doubled at a seam. */
-static int put_stack(present_region_t* rg, int n, int px, int dx, int dw, int ch, double u, const int seg[][2], int nseg) {
-    int total = 0;
-    for (int i = 0; i < nseg; i++) total += seg[i][1];
-    int acc = 0;
-    for (int i = 0; i < nseg; i++) {
-        int top = ch - rr((total - acc) * u), bot = ch - rr((total - acc - seg[i][1]) * u);
-        n = put_region(rg, n, px, 21 + seg[i][0], PNL_W, seg[i][1], dx, top, dw, bot - top);
-        acc += seg[i][1];
-    }
-    return n;
-}
 
-/* The squad panel's body: the member grid is 3 columns x 4 rows of 38-pixel cells, rows [252,403) of the panel; the game draws the
- * selected unit's portrait over the first two rows (or the members, from the first cell on). The panel shows two rows (75 pixels)
- * and four (151) when the lower two hold anything (the presenter's probe, squad_probe: more than six soldiers). */
-#define SQ_HEAD_Y 230
-#define SQ_HEAD_H 22
-#define SQ_BODY_Y 252
-#define SQ_ROWS2  75
-#define SQ_ROWS4  151
-#define SQ_FRAME_Y 403
-#define SQ_FRAME_H 7
 /* ---- opaque UI rectangles and the insets they imply ------------------------------------------------------------
  * The battlefield is drawn over the whole window and the UI over it. What a layout has to say about itself is the list of its OPAQUE rectangles
  * in window pixels, each with the sides of the window it stands on (ui_add). From that list the host derives, for every layout the same way, the
  * insets: how far the opaque UI reaches into the window from the left, top, right and bottom side (the largest reach of the rectangles standing
  * on that side). They go to the camera (hires_set_insets, game pixels of the view) so the map's edges line up with the UI's boundary instead of
- * disappearing behind it, and the part of the view beyond the map (stale tiles) is covered by flat bands (the presenter's `bands`).
- * A new layout only builds its regions and calls ui_add for each opaque piece: nothing else (docs/R_step4_plan.md "Adding a layout"). */
+ * disappearing behind it, and the part of the view beyond the map (stale tiles) is covered by flat bands.
+ * Only the classic layout uses it now (the bottom console was removed, docs/R_step4_plan.md section 12). A new layout only builds its regions and calls ui_add for each opaque piece: nothing else (docs/R_step4_plan.md "Adding a layout"). */
 enum { UI_TOP = 1, UI_BOTTOM = 2, UI_LEFT = 4, UI_RIGHT = 8 };
 typedef struct { int x, y, w, h; unsigned edges; } ui_rect_t;
 static ui_rect_t s_ui[24];
@@ -1004,43 +894,6 @@ static int put_fill(present_region_t* rg, int n, int sx, int sy, int sw, int sh,
     if (dw <= 0 || dh <= 0) return n;
     n = put_region(rg, n, sx, sy, sw, sh, dx, dy, dw, dh);
     rg[n - 1].use_fill = 1, rg[n - 1].fill = fill;
-    return n;
-}
-
-/* The console's height: the tallest piece (the minimap 148 rows, the squad panel 29 + its member rows), game rows. */
-static int console_rows(int body) {
-    int sq = SQ_HEAD_H + body + SQ_FRAME_H;
-    return sq > 148 ? sq : 148;
-}
-
-/* Appends the console's regions (and the edge strip's) to rg[n..]; the panel's pieces only while the panel is fully open
- * (while it slides or is closed, the window shows the world and the edge strip alone). Left to right, bottoms on the window's edge:
- *     MINIMAP | SQUAD (one panel: the header over the member grid) | ... | SARGE weapons over COMMANDS | edge strip
- * The world shows between the pieces; the inset is the tallest piece's height across the width, so at a map's edge the camera stops the map at
- * that line and the flat band (the layout's overscroll band) fills the gaps below it, in the grid's colour.
- * Declares the opaque rectangles (ui_add). Returns the new count. */
-static int build_bottom(int cw, int ch, double u, const pstate_t* st, present_region_t* rg, int n) {
-    const hires_view_t* hv = &st->hv;
-    int px = hv->panel_x, dw = rr(PNL_W * u), stw = rr(EDGE_W * u), stx = cw - stw;
-    g_console_lo = n;
-    if (hv->hud_right <= hv->a - PNL_W - EDGE_W) {
-        int rbx = stx - dw, sqx = dw;
-        int body = st->ovf ? SQ_ROWS4 : SQ_ROWS2;
-        int hb = rr(console_rows(body) * u);
-        /* the console's reach into the window: the tallest piece, flat across (the camera keeps the map's edge above it) */
-        ui_add(0, ch - hb, stx, hb, UI_BOTTOM);       /* (no base is drawn: the world shows between the pieces; at a map edge the camera's band fills the gap) */
-        /* minimap */
-        n = put_region(rg, n, px, 21 + 0, PNL_W, 148, 0, ch - rr(148 * u), dw, rr(148 * u));
-        /* SARGE (weapons) above COMMANDS, at the right */
-        n = put_region(rg, n, px, 21 + 410, PNL_W, 49, rbx, ch - rr(49 * u), dw, rr(49 * u));
-        n = put_region(rg, n, px, 21 + 148, PNL_W, 82, rbx, ch - rr(131 * u), dw, rr(131 * u) - rr(49 * u));
-        /* SQUAD: header, member rows, the panel's bottom frame */
-        const int seg[3][2] = { { SQ_HEAD_Y, SQ_HEAD_H }, { SQ_BODY_Y, body }, { SQ_FRAME_Y, SQ_FRAME_H } };
-        n = put_stack(rg, n, px, sqx, dw, ch, u, seg, 3);
-    }
-    g_console_hi = n - 1;
-    n = put_region(rg, n, hv->a - EDGE_W, 21, EDGE_W, 459, stx, rr(21 * u), stw, rr(459 * u));
-    ui_add(stx, rr(21 * u), stw, rr(459 * u), UI_RIGHT);
     return n;
 }
 
@@ -1265,17 +1118,11 @@ static int layout_impl(int cw, int ch, int w, int h, present_region_t* rg, const
                 if (shy < 0) n = put_fill(rg, n, m.sx, m.sy, m.sw, 1, m.dx, full.dy, m.dw, m.dy - full.dy, st->fill_idx);
             }
         }
-        double ub = g_hud_layout == 1 && hv.hud_ok ? bottom_scale(cw, ch, u) : 0.0;     /* the console's scale, 0: the classic column */
-        if (ub > 0) u = ub;
         rg[n].sx = 0, rg[n].sy = 0, rg[n].sw = MW, rg[n].sh = STRIP_Y;
         rg[n].dx = 0, rg[n].dy = 0, rg[n].dw = cw, rg[n].dh = (int)(STRIP_Y * u + 0.5);
         n++;
         ui_add(0, 0, cw, rg[n - 1].dh, UI_TOP);
-        if (ub > 0) {
-            n = build_bottom(cw, ch, ub, st, rg, n);
-            g_bottom_active = 1;
-        } else {
-            g_bottom_active = 0;
+        {
             int right = hv.hud_right;
             if (right < 1 || right > hv.a - 1) right = hv.a - 16;
             rg[n].sx = right, rg[n].sy = STRIP_Y, rg[n].sw = hv.a - right, rg[n].sh = MH - STRIP_Y;
@@ -1310,7 +1157,6 @@ static int layout_impl(int cw, int ch, int w, int h, present_region_t* rg, const
         }
         return n;
     }
-    g_bottom_active = 0;
     int pw = (int)(MW * s + 0.5), ph = (int)(MH * s + 0.5);
     int px = (cw - pw) / 2, py = (ch - ph) / 2;
     int right = (int)MEM32(ADDR_BLIT_RIGHT);
@@ -1502,10 +1348,8 @@ static void keydiag(const uint8_t* frame, int w, int texh, const present_region_
 /* Shows the primary about 60 times a second (present_frame waits for vsync). It
  * owns the D3D device, created here, on this thread only. The pixels are copied
  * under the lock, so a Flip never happens halfway through a copy. */
-static DWORD g_t0;
 static DWORD WINAPI presenter(LPVOID unused) {
     (void)unused;
-    g_t0 = GetTickCount() / 1000;
     while (!g_hwnd) Sleep(5);
     /* The game's loop is unthrottled (thousands of Flips a second) and shares one core with this thread
      * (main.c): at equal priority the presenter woke up late and showed ~30 fps. A slightly higher
@@ -1558,11 +1402,6 @@ static DWORD WINAPI presenter(LPVOID unused) {
         surf_t* p = g_primary;
         w = p->w, h = p->h;
         st.act = hires_view(&st.hv) && st.hv.a == w && st.hv.hc == h;
-        {   /* test switch PLASTIC_TEST_CLOSE=s: from s seconds on the layout sees the panel closed (the slide's end state), to look at the bottom layout without the console */
-            static double t_close = -2;
-            if (t_close == -2) t_close = getenv("PLASTIC_TEST_CLOSE") ? atof(getenv("PLASTIC_TEST_CLOSE")) : -1;
-            if (t_close >= 0 && st.act && GetTickCount() / 1000.0 > t_close + (double)g_t0) st.hv.hud_right = st.hv.a - 16;
-        }
         st.key = (int)g_key;
         st.game_state = (int)MEM32(ADDR_GAME_STATE);
         int dview = st.act && st.hv.dialog;
@@ -1638,8 +1477,6 @@ static DWORD WINAPI presenter(LPVOID unused) {
             }
             st.fill_idx = di;
         }
-        if (st.act && g_hud_layout == 1 && st.hv.hud_ok && st.hv.hud_right <= st.hv.a - 160 && st.hv.panel_x + 144 <= w)
-            squad_probe(frame, w, &st.hv, &st.ovf, &st.fill_idx);
         present_region_t rg[MAX_REGIONS];
         RECT rc;
         memset(rg, 0, sizeof rg);
@@ -1701,20 +1538,8 @@ static int cursor_from_client(POINT c, POINT* p) {
     hires_view_t hv;
     RECT rc;
     if (g_edge_scroll && hires_view(&hv) && !hv.dialog && GetClientRect(g_hwnd, &rc)) {
-        /* With the bottom console the pointer at the window's left or top edge may be over a console panel (the minimap in the corner):
-         * there it stays a pointer on the panel; only the world, the top strip and the edge strip scroll by their edges. The bottom
-         * edge always scrolls down (the console stands on it): the pointer then takes its x from the battlefield underneath. */
-        int top = g_bottom_active ? present_region_at(c.x, c.y) : 0;
-        int on_console = g_bottom_active && top >= g_console_lo && top <= g_console_hi;
-        if (c.x <= 1) { if (!on_console) p->x = 0; } else if (c.x >= rc.right - 2) p->x = hv.a - 1;
-        if (c.y <= 1) { if (!on_console) p->y = 0; }
-        else if (c.y >= rc.bottom - 2) {
-            if (on_console) {
-                int wx = 0, wy = 0;
-                if (present_window_to_frame_region0(c.x, c.y, &wx, &wy)) p->x = wx;
-            }
-            p->y = hv.hc - 1;
-        }
+        if (c.x <= 1) p->x = 0; else if (c.x >= rc.right - 2) p->x = hv.a - 1;
+        if (c.y <= 1) p->y = 0; else if (c.y >= rc.bottom - 2) p->y = hv.hc - 1;
     }
     if (!g_edge_scroll && (int)MEM32(ADDR_GAME_STATE) == STATE_MISSION) {
         int l = (int)MEM32(0x00485310u), t = (int)MEM32(0x00485314u), r = (int)MEM32(0x00485318u), b = (int)MEM32(0x0048531Cu);
