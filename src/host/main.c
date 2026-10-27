@@ -29,6 +29,7 @@
 #include "recomp_target.h"   /* the exe the C was lifted from: scripts/run_lift.py */
 #include "mouse.h"
 #include "vddraw.h"
+#include "hires.h"
 
 #define AM2_IMAGE_BASE 0x00400000u
 #define AM2_ENTRY      0x004664C0u   /* the PE entry point: MSVC 6's WinMainCRTStartup */
@@ -339,9 +340,9 @@ static void route_through_host_iat(void) {
            routed, g_route_gdi ? "USER32+GDI32" : "USER32", missing);
 }
 
+/* every indirect call asks here first: the host's wrappers (hires.c), else the lifted table */
 recomp_func_t recomp_lookup_manual(uint32_t va) {
-    (void)va;
-    return NULL;
+    return hires_lookup(va);
 }
 
 /* ---------------------------------------------------------------- reports */
