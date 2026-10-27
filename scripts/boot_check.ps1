@@ -3,7 +3,7 @@ boot_check.ps1 - boot smoke test for build\plasticrecomp.exe.
 
   pwsh scripts\boot_check.ps1 [host args...]   (default: --watchdog 40)
 
-Starts the host in the background from C:\plasticrecomp, stdout+stderr in build\run.log (one
+Starts the host in the background from the repository root, stdout+stderr in build\run.log (one
 handle, via cmd, as in run.ps1). At 5, 12, 20 and 30 s it lists the windows of every process
 named plasticrecomp and screenshots them (scripts\screenshot.ps1). It waits for the host to
 exit; at the watchdog time + 10 s (40 + 10 when no --watchdog is given) it kills every

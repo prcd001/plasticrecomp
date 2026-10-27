@@ -202,7 +202,23 @@ creates that object in the host's 32-bit process and lists its connections. On t
 Windows' legacy DirectPlay is already enabled here (registered: `dplayx.dll`, four service
 providers). On a PC where it is not: `Enable-WindowsOptionalFeature -Online -FeatureName DirectPlay -All`
 in an admin PowerShell. DirectPlay does not cross NAT, so internet play needs a virtual LAN (Tailscale,
-ZeroTier, Radmin VPN) between the players, each running their own build. Not tested in a real game.
+ZeroTier, Radmin VPN) between the players, each running their own build.
+
+Tested on two real PCs on a LAN (2026-10-27, TCP/IP): the lobby, joining, the deployment screen, the mission,
+ESC / ABORT all work. Findings:
+
+- **Connection names.** The DirectPlay providers' names come from Windows in its UI language, and the
+  game's lobby showed them as they were. The host hooks `EnumConnections` on the object `CoCreateInstance`
+  returns (main.c) and swaps in the original English names by provider GUID (`PLASTIC_DPNAMES=0` turns
+  it off).
+- **Deployment phase.** In a network game the mission starts with a deployment screen, which the game
+  builds with the HUD gone and never re-creates by itself afterwards. The `sub_004260C0` wrapper
+  (hires.c) keeps the classic 640x480 geometry while the flag at 0x00511DD4 is set and, when it clears,
+  re-creates the HUD (the flag's writer was seen as `sub_0040B000`).
+- **Pink screen.** The key-colour fill of a dialog's corner showed between the lobby and the next
+  screen; `vdd_dialog_end` now fills black.
+- **Two copies on one PC.** The game's single-instance mutex `ArmyMenMutex` (0x0040B60F) is hidden from
+  `OpenMutexA` when `PLASTIC_MULTI=1`, so a game against `127.0.0.1` can be tried alone.
 
 ## GOG buyers
 
@@ -250,7 +266,7 @@ project removes no copy protection, and pcrecomp's `tools/drm/` scripts are not 
 
 - `scripts/setup.ps1`: owner's game (disc, GOG, Steam) to built host.
 - `scripts/present_test.c`: the presenter, tested alone.
-- `scripts/hash_compare.py`: the provenance hashing.
+- `scripts/hash_compare.py`: hashes two copies of the game folder and compares them file by file.
 
 `scripts/run.ps1` (run, log to `build\run.log`), `scripts/screenshot.ps1` (capture the game window
 to `build\screens\`), `scripts/boot_check.ps1` (run plus screenshots at 5/12/20/30 s) and

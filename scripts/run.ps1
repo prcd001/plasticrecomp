@@ -1,5 +1,5 @@
 <#
-run.ps1 - run build\plasticrecomp.exe from C:\plasticrecomp and keep its output.
+run.ps1 - run build\plasticrecomp.exe from the repository root and keep its output.
 
   pwsh scripts\run.ps1 [host args...]        (default: --watchdog 30)
 

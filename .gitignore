@@ -36,3 +36,7 @@ __pycache__/
 *.pyc
 # Local Claude Code instructions
 CLAUDE.md
+# Local shortcuts
+*.lnk
+# The author's session handoff notes (local only)
+docs/HANDOFF.md

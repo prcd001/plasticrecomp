@@ -74,7 +74,7 @@ Evidence tags: [V] page fetched and read this session; [K] from background knowl
 - (a) F3 toggles an FPS/ms/guest-state overlay (drawn in the presenter, no ImGui needed); an unhandled-exception
   filter writes `crash.txt` with guest EIP, nearest lifted function and the last N logged events plus a minidump.
 - (b) devilutionX FPS counter, OpenRCT2 "show FPS", pcrecomp recomp32 crash report; tiberiansun-recomp `TS_PROFILE`.
-- (c) Host-only (`main.c` exception filter; HANDOFF already lists guest C++ exceptions as unhandled).
+- (c) Host-only (`main.c` exception filter; guest C++ exceptions are still unhandled).
 - (d) S-M. (e) Low. (f) Yes: force a crash with a test switch, check the file; overlay by screenshot.
 
 ### 6. Palette-aware accessibility: colourblind team colours, contrast and "vivid" look

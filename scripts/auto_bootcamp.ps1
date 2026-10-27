@@ -3,14 +3,14 @@ auto_bootcamp.ps1 - unattended path from launch to a Boot Camp mission screensho
 
   pwsh scripts\auto_bootcamp.ps1 [-Tag before] [-Duration 110] [-Shots '12,28,40,55,70,90'] [-HostArgs ...]
 
-Starts build\plasticrecomp.exe from C:\plasticrecomp with the test switches PLASTIC_KEYS and
+Starts build\plasticrecomp.exe from the repository root with the test switches PLASTIC_KEYS and
 PLASTIC_SCRIPT (src\host\mouse.c) set, so no real keyboard or mouse is involved and the game
 need not be in the foreground:
   - Escape (DIK 1) at 6 s and 20 s skips the two intro movies; Space closes the sheet below;
   - the cursor goes to the BOOT CAMP button of the title menu and clicks it (-ClickAt, game pixels;
     measured 2026-10-27 on the 640x480 menu: button spans x 231..383, y 130..155, centre 307,142);
   - the game then runs the CD check (disc image at H:) and loads the mission (reached about 34 s
-    after launch on the owner's PC); a "Welcome to Boot Camp!" box is up, with OK at game pixel
+    after launch on the author's PC); a "Welcome to Boot Camp!" box is up, with OK at game pixel
     478,225 (-OkAt), clicked at -OkTime; a Boot Camp instruction sheet follows and Space (at
     -OkTime + 6) closes it; the pointer is parked at 200,150 (-OkTime + 12).
 At each -Shots time (seconds after launch) the host window is screenshotted (scripts\screenshot.ps1),

@@ -13,8 +13,7 @@ original 1999 code, lifted to C, runs natively on a 32-bit host. The host adds:
 - a HUD that scales separately from the battlefield;
 - a battlefield that fills the window, however big, with zoom (Plus / Minus).
 
-Status: the project is a work in progress and has had little play testing. Where the work stands:
-`docs/HANDOFF.md`. What was measured: `NOTES.md`. The resolution plan: `docs/R_hires.md`.
+Status: the project is a work in progress and has had little play testing. What was measured: `NOTES.md`. The resolution plan: `docs/R_hires.md`.
 
 ## Rules
 
@@ -64,7 +63,7 @@ which belongs to its rights holders, nor in pcrecomp or cnc-ddraw (both MIT, the
 | `src/host/config.c` | `plastic.ini`: read at start, written on exit |  yes |
 | `src/host/mouse.c` | the game's DirectInput mouse, fed from the Windows cursor | yes |
 | `scripts/` | lift (`run_lift.py`), setup for disc/GOG/Steam owners (`setup.ps1`), host build, presenter test, run, screenshot, key and hashing tools, the unattended Boot Camp run (`auto_bootcamp.ps1`, `compare_shots.py`) | yes |
-| `docs/` | `HANDOFF.md`, `R_hires.md` (resolution research and plan), and the other design notes | yes |
+| `docs/` | `R_hires.md` (resolution research and plan), `R_step4_plan.md`, `R_features.md` and the other design notes | yes |
 | `third_party/pcrecomp/` | pcrecomp checkout (MIT), commit in `NOTES.md` | no |
 | `third_party/cnc-ddraw/` | cnc-ddraw v7.1.0.0 (MIT), used only with `--cnc-ddraw` | no |
 | `src/recomp/gen/`, `work/`, `build/` | lifted C, analysis output, objects and the host exe | no |
@@ -149,6 +148,20 @@ the focus (chat, names, save names) and no mission dialog is up, so they can be 
 | `--scaling MODE`, `--vsync 0\|1` | start with that scaling mode (`sharp`, `nearest`, `smooth`, `scanlines`) / vsync (overrides `plastic.ini`) |
 | `--ini FILE`, `--no-ini` | use that settings file / neither read nor write one |
 
+### Multiplayer
+
+The game's network play (LAN, TCP/IP) goes through Windows' legacy DirectPlay and works with the host's own
+DirectDraw; it was tested between two PCs on a LAN (lobby, deployment screen, mission, ESC / ABORT).
+
+- Both PCs need the **DirectPlay** Windows feature: `Enable-WindowsOptionalFeature -Online -FeatureName DirectPlay -All`
+  in an admin PowerShell (`plasticrecomp.exe --dplay-check` says whether it is there).
+- Both PCs run **the same build** of the host and the lifted game, and the firewall must let `plasticrecomp.exe` through.
+- DirectPlay does not cross NAT: over the internet, put the players on a virtual LAN (Tailscale, ZeroTier, Radmin VPN).
+- Windows names the connections in the system's language; the host shows the original English names. `PLASTIC_DPNAMES=0` leaves them as Windows gives them.
+- `PLASTIC_MULTI=1` lets a second copy run on one PC (the game normally allows one). Give each copy its own
+  `--game` folder and `--ini`, and join over `127.0.0.1`.
+- During the deployment phase the game shows its classic 640x480 layout; the high-resolution view returns when the mission starts.
+
 ### plastic.ini
 
 Settings that persist, read at start and written when the game exits (a run that is killed writes
@@ -225,3 +238,10 @@ clicks BOOT CAMP (game pixel 307,142), clicks OK on the "Welcome to Boot Camp!" 
 the instruction sheet with Space, parks the pointer, takes screenshots at the `-Shots` times into
 `build\screens\<Tag>_<time>s.png`, and kills the game at `-Duration`. The mission is on screen about 35 s
 after launch. Two runs of the same build give pixel-identical screenshots, apart from a few animated pixels.
+
+## Credits
+
+- [pcrecomp](https://github.com/sp00nznet/pcrecomp) (sp00nznet): the recompilation toolkit and the 32-bit native runtime this host builds on.
+- [cnc-ddraw](https://github.com/FunkyFr3sh/cnc-ddraw) (FunkyFr3sh): the DirectDraw wrapper the `--cnc-ddraw` path uses.
+- [borancar/ArmyMen2](https://github.com/borancar/ArmyMen2): a reverse-engineering effort for the same game, used as a
+  reference for where the functions start (`scripts/refa_reference.py`, `docs/R_hires.md`). No code of it is included.

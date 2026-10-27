@@ -134,7 +134,7 @@ locate pool/list counters; count SeqEvict sub_00460FD0 calls via a wrapper (dupc
 5. PLASTIC_SCRIPT, PLASTIC_KEYS and automated Boot Camp entry (can go before 3).
 6. Classify R2 functions; wrap any HUD-like ones.
 7. Pool and performance measurement at 1080p and 4K; cap decision.
-8. Docs: R_hires.md step 4, README keys table, HANDOFF; audit_repo.py clean.
+8. Docs: R_hires.md step 4, README keys table; audit_repo.py clean.
 
 Files: scripts\run_lift.py, src\host\main.c (recomp_lookup_manual), new src\host\hires.c/.h, src\host\vddraw.c, src\host\mouse.c, scripts\build_host.bat (add hires.c), docs.
 
@@ -302,3 +302,12 @@ A steady slot every 1 / game_fps s on the performance counter: a high-resolution
 
 ### Test tools added
 `PLASTIC_OBJDUMP=dir`, `PLASTIC_OBJDUMP_AT="t1,t2,.."` (host seconds since the process started): the object table (id, pointer, 0x180 bytes; units 1000..1099 also the two blocks their +0x74 / +0x90 point at) to `dir\objs_<n>.bin`, the trig tables to `trig.txt`, the atan tables to `atan.bin`. `PLASTIC_OBJTRACE="id,from,to"`: that unit's block, every 50 ms, to the log.
+
+## 15. Network games: the deployment phase (2026-10-27)
+
+In a network game the mission opens with a deployment screen (state 2, `sub_004260C0`) that the game runs without a HUD: a flag at 0x00511DD4 is set (its writer seen as `sub_0040B000`) and the game never re-creates the HUD by itself when the flag clears. In the hires layout that left the battlefield without its panel after START, and the 640x480 geometry the screen expects was missing during the phase.
+
+- While the flag is set, the `sub_004260C0` wrapper (hires.c) gives the game the classic 640x480 geometry, as for a mission dialog (section 9).
+- The wrapper polls the flag; when it clears, it re-creates the HUD (R4 in section 7 / `sub_0040A6B0`) and the hires layout returns.
+- `vdd_dialog_end` fills the dialog's corner black instead of the key colour: the lobby's teardown may not repaint it for a while.
+- Checked on two PCs on a LAN: deployment, START, the mission, ESC / ABORT. `PLASTIC_HIRES=0` switches all of it off.
