@@ -228,6 +228,23 @@ static HRESULT WINAPI sf_Blt(surf_t* d, RECT* dr, surf_t* s, RECT* sr, DWORD fla
         copy(d, dr ? dr->left : 0, dr ? dr->top : 0, s, q.left, q.top, sw, sh, keyed);
         return DD_OK;
     }
+    /* Sizes differ. The game never stretches on purpose: its cursor draw saves the pixels under the pointer into a 32x32
+     * surface and puts them back with the rectangles of the whole surface (0,0,32,32) on one side and the pointer's own
+     * (the arrow is 12x16) on the other. DirectDraw stretches such a Blt, so the round trip saves a 12x16 patch stretched
+     * to 32x32 and restores it by shrinking: every column but each third comes back shifted by a pixel, and the repaired
+     * background is what the next save-under takes. Where the picture under the pointer stays put (a dialog over the
+     * frozen world) the pointer then leaves a smear of shifted columns behind it, more with every pass: a bug of the 1999 game
+     * (real hardware stretches the same way), invisible while the world is redrawn each frame. What the game means is a
+     * 1:1 copy of the smaller of the two rectangles at the origin of each: done so, unless PLASTIC_BLT_STRETCH=1. */
+    {
+        static int keep = -1;
+        if (keep < 0) keep = getenv("PLASTIC_BLT_STRETCH") != NULL;
+        if (!keep) {
+            int cw = dw < sw ? dw : sw, ch = dh < sh ? dh : sh;
+            copy(d, dr ? dr->left : 0, dr ? dr->top : 0, s, q.left, q.top, cw, ch, keyed);
+            return DD_OK;
+        }
+    }
     /* stretch: nearest. The game never asks for it; here for safety */
     int dl = dr ? dr->left : 0, dt = dr ? dr->top : 0;
     for (int y = 0; y < dh; y++) {
