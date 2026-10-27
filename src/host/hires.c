@@ -140,6 +140,7 @@ static void unlock(void) { LeaveCriticalSection(&g_cs); }
 static void set_mem_rect(uint32_t addr, int l, int t, int r, int b) {
     MEM32(addr) = (uint32_t)l, MEM32(addr + 4) = (uint32_t)t, MEM32(addr + 8) = (uint32_t)r, MEM32(addr + 12) = (uint32_t)b;
 }
+static int g_cam_have;                   /* the camera wrapper's overscroll state is initialised */
 static int g_snap_taken;                /* this dialog's backdrop snapshot has been taken (game thread) */
 static int g_dialog;                    /* game thread: a widget screen of the mission is up, in the 640x480 geometry (enter_dialog) */
 static void clip_view(void) { if (g_dialog) set_mem_rect(ADDR_CLIP, 0, 0, 640, 480); else set_mem_rect(ADDR_CLIP, 0, 0, g_vw, STRIP_H + g_vh); }
@@ -454,7 +455,8 @@ static void apply_geometry(int cw, int ch, int zi) {
     MEM32(ADDR_REDRAW) = 1;
     lock();
     g_view.ww = ww, g_view.wh = wh, g_view.a = g_a, g_view.hc = g_hc, g_view.hud_right = g_hud_right;
-    g_view.map_rows = wh;
+    g_view.shift_x = 0, g_view.shift_y = 0;
+    g_cam_have = 0;
     g_view.capped = c.map_capped;
     g_view.zoom = c.ze;                 /* the zoom the view was made for: the asked one unless the surfaces cap it */
     g_view.eff = c.eff;
@@ -572,34 +574,72 @@ void sub_00412FE0(void) {
     if (g_geo) clip_view();          /* not if restore_640 ran inside (via a state request) */
 }
 
-/* The camera (0x0042B5A0: clamps the target to [map + view/2, map_end - view/2 - 1] and centres the view on it; the view's size is BLIT_RECT's).
- * With the bottom console the tallest piece stands over the last rows of the view, so the camera is told a view shorter by those rows:
- * it then centres on the part above the console, and at the map's bottom edge lets the view run past the map by that much (under the console)
- * so Sarge, who cannot be below the map, is never behind it. The drawing keeps the full SCREEN_H. */
+/* The camera (0x0042B5A0) and the UI's insets.
+ * The game clamps the camera's target and eye so the view (BLIT_RECT's size) stays on the map, and the view is the whole window with the UI drawn
+ * over it, so a map edge at the view's edge is behind the UI (the original's view ended where its panel began). The presenter reports how far the
+ * opaque UI reaches into the view (l, t, r, b, game pixels). The game itself is left alone (it never draws beyond the map: widening its map bounds
+ * made it fill tiles beyond the edge and leave junk blocks in the picture), the camera's overscroll is kept here instead:
+ *   - Tv is the target the player wants (map coordinates, centre of the part of the view the UI leaves free), unclamped: set absolute by the minimap
+ *     click and the follow object, moved by the same step the game's edge scroll moved the target by otherwise;
+ *   - ed = clamp(Tv + ((r - l) / 2, (b - t) / 2)) to the range that puts the UI's boundary at the map's edge: [min - l + W/2, max + r - W/2 - 1];
+ *   - the game gets ed as its target and clamps it as ever (eg); s = ed - eg is what the shown picture is moved by (hires_view_t shift): the
+ *     presenter draws the game's picture moved by s and covers the strip the move leaves with a flat band.
+ * Zero insets: nothing is changed (the game's camera untouched). */
+static volatile LONG g_ins_l, g_ins_t, g_ins_r, g_ins_b;
+void hires_set_insets(int l, int t, int r, int b) {
+    g_ins_l = l < 0 ? 0 : l, g_ins_t = t < 0 ? 0 : t, g_ins_r = r < 0 ? 0 : r, g_ins_b = b < 0 ? 0 : b;
+}
+
+static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+
 void sub_0042B5A0(void) {
     static volatile LONG seen;
+    static int no_ins = -1;
     first_hit(&seen, "camera 0x0042B5A0");
-    static int g_no_cover = -1;
-    if (g_no_cover < 0) g_no_cover = getenv("PLASTIC_NO_COVER") != NULL;
-    int extra = 0;
-    if (g_enabled && g_geo && !g_dialog && (int)MEM32(ADDR_STATE) == STATE_MISSION && !g_no_cover) extra = vdd_bottom_cover();
-    if (extra > 0 && extra < g_vh / 2) {
-        uint32_t bottom = MEM32(ADDR_BLIT + 12);
-        MEM32(ADDR_BLIT + 12) = bottom - (uint32_t)extra;
+    if (no_ins < 0) no_ins = getenv("PLASTIC_NO_INSETS") != NULL;
+    int play = g_enabled && g_geo && !g_dialog && (int)MEM32(ADDR_STATE) == STATE_MISSION;
+    int ins[4] = { 0, 0, 0, 0 };
+    if (play && !no_ins) {
+        ins[0] = g_ins_l, ins[1] = g_ins_t, ins[2] = g_ins_r, ins[3] = g_ins_b;
+        if (ins[0] + ins[2] > g_vw / 2) ins[0] = ins[2] = g_vw / 4;          /* (a sanity bound: never more than half the view) */
+        if (ins[1] + ins[3] > g_vh / 2) ins[1] = ins[3] = g_vh / 4;
+    }
+    int sx = 0, sy = 0;
+    if (ins[0] | ins[1] | ins[2] | ins[3]) {
+        const int vw = g_vw, vh = g_vh;
+        int minx = (int)MEM32(ADDR_MAP_MIN_X), miny = (int)MEM32(ADDR_MAP_MIN_X + 4), maxx = (int)MEM32(ADDR_MAP_MIN_X + 8), maxy = (int)MEM32(ADDR_MAP_MIN_X + 12);
+        int offx = (ins[2] - ins[0]) / 2, offy = (ins[3] - ins[1]) / 2;
+        uint32_t obj = MEM32(0x005122CCu);
+        int follow = obj && (MEM32(0x00511E34u) || MEM32(0x00511E3Cu));
+        int tx = (int16_t)MEM16(0x00514E08u), ty = (int16_t)MEM16(0x00514E0Au);       /* the target as it stands: moved by the edge scroll, set by the minimap */
+        int ex = (int16_t)MEM16(0x00514E0Cu), ey = (int16_t)MEM16(0x00514E0Eu);       /* the eye the game has */
+        static int vx, vy, lastx, lasty;
+        if (!g_cam_have) { vx = tx, vy = ty, lastx = tx, lasty = ty; g_cam_have = 1; }
+        if (follow) vx = (int16_t)MEM16(obj + 0x12), vy = (int16_t)MEM16(obj + 0x14);
+        else if (MEM32(0x00511E38u)) vx = tx, vy = ty;                               /* the minimap's jump: absolute */
+        else if (tx != lastx || ty != lasty) vx += tx - ex, vy += ty - ey;           /* the edge scroll's step, taken from the eye */
+        int edx_ = clampi(vx + offx, minx - ins[0] + vw / 2, maxx + ins[2] - vw / 2 - 1);
+        int edy_ = clampi(vy + offy, miny - ins[1] + vh / 2, maxy + ins[3] - vh / 2 - 1);
+        vx = edx_ - offx, vy = edy_ - offy;                                          /* (the overscroll stops at the display range) */
+        sx = edx_ - clampi(edx_, minx + vw / 2, maxx - vw / 2 - 1);
+        sy = edy_ - clampi(edy_, miny + vh / 2, maxy - vh / 2 - 1);
+        int16_t sv[2] = { 0, 0 };
+        if (follow) sv[0] = (int16_t)MEM16(obj + 0x12), sv[1] = (int16_t)MEM16(obj + 0x14);
+        MEM16(0x00514E08u) = (uint16_t)edx_, MEM16(0x00514E0Au) = (uint16_t)edy_;
+        if (follow) MEM16(obj + 0x12) = (uint16_t)edx_, MEM16(obj + 0x14) = (uint16_t)edy_;
         sub_0042B5A0_lifted();
-        MEM32(ADDR_BLIT + 12) = bottom;
+        if (follow) MEM16(obj + 0x12) = (uint16_t)sv[0], MEM16(obj + 0x14) = (uint16_t)sv[1];
+        lastx = (int16_t)MEM16(0x00514E08u), lasty = (int16_t)MEM16(0x00514E0Au);
     } else {
+        g_cam_have = 0;
         sub_0042B5A0_lifted();
     }
-    if (g_enabled && g_geo && !g_dialog && (int)MEM32(ADDR_STATE) == STATE_MISSION) {
-        /* the view's rows on the map: its origin (0x00514E38, the world y of the view's top) to the map's bottom edge (0x00514E04) */
-        int rows = (int)MEM32(ADDR_MAP_MIN_X + 12) - (int)MEM32(0x00514E38u);
-        if (rows > g_vh || rows < 64) rows = g_vh;
+    if (play) {
         lock();
-        int changed = g_view.map_rows != rows;
-        g_view.map_rows = rows;
+        int changed = g_view.shift_x != sx || g_view.shift_y != sy;
+        g_view.shift_x = sx, g_view.shift_y = sy;
         unlock();
-        if (changed && g_log) fprintf(stderr, "[hires] camera: view rows on the map %d of %d (console covers %d)\n", rows, g_vh, extra);
+        if (changed && g_log) fprintf(stderr, "[hires] camera: insets %d,%d,%d,%d; the shown picture is moved by %d,%d\n", ins[0], ins[1], ins[2], ins[3], sx, sy);
     }
 }
 

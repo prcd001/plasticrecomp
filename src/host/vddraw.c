@@ -917,7 +917,6 @@ static void squad_probe(const uint8_t* frame, int w, const hires_view_t* hv, int
 #define EDGE_W 16
 static volatile LONG g_bottom_active;   /* the last frame was laid out with the console */
 static volatile LONG g_console_lo, g_console_hi;     /* its regions' indices (the panels, not the world, the top strip or the edge strip) */
-static int g_cover_px;                  /* the tallest piece of the last layout, window pixels */
 int  vdd_get_hud_layout(void) { return (int)g_hud_layout; }
 void vdd_set_hud_layout(int v) { InterlockedExchange(&g_hud_layout, v == 1); }
 const char* vdd_hud_layout_name(int v) { return v == 1 ? "bottom console" : "classic (right column)"; }
@@ -973,25 +972,63 @@ static int put_stack(present_region_t* rg, int n, int px, int dx, int dw, int ch
 #define SQ_ROWS4  151
 #define SQ_FRAME_Y 403
 #define SQ_FRAME_H 7
-static volatile LONG g_cover_rows;      /* the game rows (of the world view's bottom) the tallest console piece covers; the camera wrapper (hires.c) reads it */
-int vdd_bottom_cover(void) { return (int)g_cover_rows; }
+/* ---- opaque UI rectangles and the insets they imply ------------------------------------------------------------
+ * The battlefield is drawn over the whole window and the UI over it. What a layout has to say about itself is the list of its OPAQUE rectangles
+ * in window pixels, each with the sides of the window it stands on (ui_add). From that list the host derives, for every layout the same way, the
+ * insets: how far the opaque UI reaches into the window from the left, top, right and bottom side (the largest reach of the rectangles standing
+ * on that side). They go to the camera (hires_set_insets, game pixels of the view) so the map's edges line up with the UI's boundary instead of
+ * disappearing behind it, and the part of the view beyond the map (stale tiles) is covered by flat bands (the presenter's `bands`).
+ * A new layout only builds its regions and calls ui_add for each opaque piece: nothing else (docs/R_step4_plan.md "Adding a layout"). */
+enum { UI_TOP = 1, UI_BOTTOM = 2, UI_LEFT = 4, UI_RIGHT = 8 };
+typedef struct { int x, y, w, h; unsigned edges; } ui_rect_t;
+static ui_rect_t s_ui[24];
+static int s_nui;
+static void ui_add(int x, int y, int w, int h, unsigned edges) {
+    if (s_nui >= 24 || w <= 0 || h <= 0) return;
+    s_ui[s_nui].x = x, s_ui[s_nui].y = y, s_ui[s_nui].w = w, s_ui[s_nui].h = h, s_ui[s_nui].edges = edges;
+    s_nui++;
+}
+/* window pixels */
+static void ui_insets(int cw, int ch, int* l, int* t, int* r, int* b) {
+    *l = *t = *r = *b = 0;
+    for (int i = 0; i < s_nui; i++) {
+        const ui_rect_t* q = &s_ui[i];
+        if ((q->edges & UI_LEFT)   && q->x + q->w > *l) *l = q->x + q->w;
+        if ((q->edges & UI_TOP)    && q->y + q->h > *t) *t = q->y + q->h;
+        if ((q->edges & UI_RIGHT)  && cw - q->x > *r) *r = cw - q->x;
+        if ((q->edges & UI_BOTTOM) && ch - q->y > *b) *b = ch - q->y;
+    }
+}
+/* a flat region over rg[n] (colour = palette index fill): `src` is the frame pixel a click on it maps to (inert, or the map's edge row) */
+static int put_fill(present_region_t* rg, int n, int sx, int sy, int sw, int sh, int dx, int dy, int dw, int dh, int fill) {
+    if (dw <= 0 || dh <= 0) return n;
+    n = put_region(rg, n, sx, sy, sw, sh, dx, dy, dw, dh);
+    rg[n - 1].use_fill = 1, rg[n - 1].fill = fill;
+    return n;
+}
+
+/* The console's height: the tallest piece (the minimap 148 rows, the squad panel 29 + its member rows), game rows. */
+static int console_rows(int body) {
+    int sq = SQ_HEAD_H + body + SQ_FRAME_H;
+    return sq > 148 ? sq : 148;
+}
 
 /* Appends the console's regions (and the edge strip's) to rg[n..]; the panel's pieces only while the panel is fully open
  * (while it slides or is closed, the window shows the world and the edge strip alone). Left to right, bottoms on the window's edge:
  *     MINIMAP | SQUAD (one panel: the header over the member grid) | ... | SARGE weapons over COMMANDS | edge strip
- * and a flat dark base along the bottom between them (49 rows, the COMMANDS panel's height), which maps to an inert frame pixel.
- * Returns the new count. */
+ * The world shows between the pieces; the inset is the tallest piece's height across the width, so at a map's edge the camera stops the map at
+ * that line and the flat band (the layout's overscroll band) fills the gaps below it, in the grid's colour.
+ * Declares the opaque rectangles (ui_add). Returns the new count. */
 static int build_bottom(int cw, int ch, double u, const pstate_t* st, present_region_t* rg, int n) {
     const hires_view_t* hv = &st->hv;
     int px = hv->panel_x, dw = rr(PNL_W * u), stw = rr(EDGE_W * u), stx = cw - stw;
-    int cover = 0;
     g_console_lo = n;
     if (hv->hud_right <= hv->a - PNL_W - EDGE_W) {
         int rbx = stx - dw, sqx = dw;
         int body = st->ovf ? SQ_ROWS4 : SQ_ROWS2;
-        /* the base: drawn first, under the pieces */
-        n = put_region(rg, n, px + 2, 21 + SQ_FRAME_Y + 2, 140, 4, 0, ch - rr(49 * u), stx, rr(49 * u));
-        rg[n - 1].use_fill = 1, rg[n - 1].fill = st->fill_idx;
+        int hb = rr(console_rows(body) * u);
+        /* the console's reach into the window: the tallest piece, flat across (the camera keeps the map's edge above it) */
+        ui_add(0, ch - hb, stx, hb, UI_BOTTOM);       /* (no base is drawn: the world shows between the pieces; at a map edge the camera's band fills the gap) */
         /* minimap */
         n = put_region(rg, n, px, 21 + 0, PNL_W, 148, 0, ch - rr(148 * u), dw, rr(148 * u));
         /* SARGE (weapons) above COMMANDS, at the right */
@@ -1000,13 +1037,10 @@ static int build_bottom(int cw, int ch, double u, const pstate_t* st, present_re
         /* SQUAD: header, member rows, the panel's bottom frame */
         const int seg[3][2] = { { SQ_HEAD_Y, SQ_HEAD_H }, { SQ_BODY_Y, body }, { SQ_FRAME_Y, SQ_FRAME_H } };
         n = put_stack(rg, n, px, sqx, dw, ch, u, seg, 3);
-        cover = rr((SQ_HEAD_H + body + SQ_FRAME_H) * u);
-        if (rr(148 * u) > cover) cover = rr(148 * u);
-        if (rr(131 * u) > cover) cover = rr(131 * u);
     }
     g_console_hi = n - 1;
     n = put_region(rg, n, hv->a - EDGE_W, 21, EDGE_W, 459, stx, rr(21 * u), stw, rr(459 * u));
-    g_cover_px = cover;
+    ui_add(stx, rr(21 * u), stw, rr(459 * u), UI_RIGHT);
     return n;
 }
 
@@ -1151,7 +1185,6 @@ void vdd_dialog_end(int restore, uint32_t save_under, int cx, int cy) {
     LeaveCriticalSection(&g_lock);
 }
 
-static int s_cov;
 static int layout_impl(int cw, int ch, int w, int h, present_region_t* rg, const pstate_t* st) {
     /* test switches: PLASTIC_FORCE_LAYOUT=1 applies the mission layout anywhere,
      * PLASTIC_UI_HALVES=n presets the UI scale (n/2) */
@@ -1165,7 +1198,7 @@ static int layout_impl(int cw, int ch, int w, int h, present_region_t* rg, const
      * letterboxed whole, however large the primary's logical size is. A frame of exactly 640x480
      * takes present_frame_regions' own whole-frame path. */
     const int MW = 640, MH = 480;
-    s_cov = 0;
+    s_nui = 0;
     if (w < MW || h < MH) return 0;
     const hires_view_t hv = st->hv;
     int act = st->act;
@@ -1206,35 +1239,59 @@ static int layout_impl(int cw, int ch, int w, int h, present_region_t* rg, const
             rg[n].dx = (cw - rg[n].dw) / 2, rg[n].dy = (ch - rg[n].dh) / 2;
         }
         n++;
-        int mask_dy = 0, mask_dh = 0;           /* the camera ran past the map's bottom edge: the rows below it hold stale tiles, covered by a flat colour */
-        if (hv.map_rows > 0 && hv.map_rows < hv.wh - 1) {
-            double k = (double)rg[0].dh / rg[0].sh;
-            int bot = rg[0].dy + rg[0].dh;
-            rg[0].sh = hv.map_rows, rg[0].dh = rr(hv.map_rows * k);
-            mask_dy = rg[0].dy + rg[0].dh, mask_dh = bot - mask_dy;
+        const present_region_t world_full = rg[0];       /* the battlefield's rectangle before the camera's overscroll moves it */
+        {   /* the camera's overscroll (hires.c): the picture shown is the game's moved by (shift_x, shift_y) game pixels, so a map edge ends at the UI's
+             * boundary instead of behind it. The game's picture is cut and moved, and the strip that is left is a flat band, each band mapping a click
+             * to the picture's edge pixel next to it. */
+            const present_region_t full = rg[0];
+            double kx = (double)full.dw / full.sw, ky = (double)full.dh / full.sh;
+            int shx = hv.shift_x, shy = hv.shift_y;
+            if (shx > full.sw / 3) shx = full.sw / 3;
+            if (shx < -full.sw / 3) shx = -full.sw / 3;
+            if (shy > full.sh / 3) shy = full.sh / 3;
+            if (shy < -full.sh / 3) shy = -full.sh / 3;
+            if (shx | shy) {
+                int ax = shx < 0 ? -shx : shx, ay = shy < 0 ? -shy : shy;
+                rg[0].sw = full.sw - ax, rg[0].sh = full.sh - ay;
+                if (shx > 0) rg[0].sx += shx;
+                if (shy > 0) rg[0].sy += shy;
+                rg[0].dw = rr(rg[0].sw * kx), rg[0].dh = rr(rg[0].sh * ky);
+                if (shx < 0) rg[0].dx = full.dx + full.dw - rg[0].dw;
+                if (shy < 0) rg[0].dy = full.dy + full.dh - rg[0].dh;
+                const present_region_t m = rg[0];
+                if (shx > 0) n = put_fill(rg, n, m.sx + m.sw - 1, m.sy, 1, m.sh, m.dx + m.dw, full.dy, full.dx + full.dw - (m.dx + m.dw), full.dh, st->fill_idx);
+                if (shx < 0) n = put_fill(rg, n, m.sx, m.sy, 1, m.sh, full.dx, full.dy, m.dx - full.dx, full.dh, st->fill_idx);
+                if (shy > 0) n = put_fill(rg, n, m.sx, m.sy + m.sh - 1, m.sw, 1, m.dx, m.dy + m.dh, m.dw, full.dy + full.dh - (m.dy + m.dh), st->fill_idx);
+                if (shy < 0) n = put_fill(rg, n, m.sx, m.sy, m.sw, 1, m.dx, full.dy, m.dw, m.dy - full.dy, st->fill_idx);
+            }
         }
         double ub = g_hud_layout == 1 && hv.hud_ok ? bottom_scale(cw, ch, u) : 0.0;     /* the console's scale, 0: the classic column */
         if (ub > 0) u = ub;
         rg[n].sx = 0, rg[n].sy = 0, rg[n].sw = MW, rg[n].sh = STRIP_Y;
         rg[n].dx = 0, rg[n].dy = 0, rg[n].dw = cw, rg[n].dh = (int)(STRIP_Y * u + 0.5);
         n++;
-        if (mask_dh > 0) {      /* (a click on it lands on the map's last row, as a click past the edge should) */
-            n = put_region(rg, n, 0, STRIP_Y + hv.map_rows - 1, hv.ww, 1, rg[0].dx, mask_dy, rg[0].dw, mask_dh);
-            rg[n - 1].use_fill = 1, rg[n - 1].fill = st->fill_idx;
-        }
+        ui_add(0, 0, cw, rg[n - 1].dh, UI_TOP);
         if (ub > 0) {
             n = build_bottom(cw, ch, ub, st, rg, n);
             g_bottom_active = 1;
-            s_cov = (g_cover_px > 0 && !hv.capped && rg[0].dh > 0) ? (LONG)ceil((double)g_cover_px * rg[0].sh / rg[0].dh) : 0;
         } else {
             g_bottom_active = 0;
-            s_cov = 0;
             int right = hv.hud_right;
             if (right < 1 || right > hv.a - 1) right = hv.a - 16;
             rg[n].sx = right, rg[n].sy = STRIP_Y, rg[n].sw = hv.a - right, rg[n].sh = MH - STRIP_Y;
             rg[n].dw = (int)((hv.a - right) * u + 0.5), rg[n].dh = (int)((MH - STRIP_Y) * u + 0.5);
             rg[n].dx = cw - rg[n].dw, rg[n].dy = (int)(STRIP_Y * u + 0.5);
+            ui_add(rg[n].dx, rg[n].dy, rg[n].dw, rg[n].dh, UI_RIGHT);
             n++;
+        }
+        {   /* the insets (game pixels of the view) from the opaque rectangles, measured from the battlefield's own rectangle on the window */
+            const present_region_t d = world_full;
+            double kx = (double)d.dw / d.sw, ky = (double)d.dh / d.sh;
+            int l, t, r, b;
+            ui_insets(cw, ch, &l, &t, &r, &b);
+            int il = l > d.dx ? (int)ceil((l - d.dx) / kx) : 0, it = t > d.dy ? (int)ceil((t - d.dy) / ky) : 0;
+            int ir = (cw - r) < d.dx + d.dw ? (int)ceil((d.dx + d.dw - (cw - r)) / kx) : 0, ib = (ch - b) < d.dy + d.dh ? (int)ceil((d.dy + d.dh - (ch - b)) / ky) : 0;
+            hires_set_insets(il, it, ir, ib);
         }
         if (dlg && st->ready) {
             int dw = (int)(MW * u + 0.5), dh = (int)(MH * u + 0.5), opaque = st->opaque;
@@ -1254,7 +1311,6 @@ static int layout_impl(int cw, int ch, int w, int h, present_region_t* rg, const
         return n;
     }
     g_bottom_active = 0;
-    s_cov = 0;
     int pw = (int)(MW * s + 0.5), ph = (int)(MH * s + 0.5);
     int px = (cw - pw) / 2, py = (ch - ph) / 2;
     int right = (int)MEM32(ADDR_BLIT_RIGHT);
@@ -1279,10 +1335,7 @@ static int layout_impl(int cw, int ch, int w, int h, present_region_t* rg, const
 }
 
 static int layout(int cw, int ch, int w, int h, present_region_t* rg, const pstate_t* st) {
-    s_cov = 0;
-    int n = layout_impl(cw, ch, w, h, rg, st);
-    g_cover_rows = s_cov;      /* one write, so the game thread never sees a zero in between */
-    return n;
+    return layout_impl(cw, ch, w, h, rg, st);
 }
 
 /* ---------------------------------------------------------------- presenter */

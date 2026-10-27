@@ -40,9 +40,10 @@ void hires_disable(void);
  *   hud_ok    the HUD's widget tree is the one the bottom layout's slices were measured on (single player: a 144x459 panel at
  *             panel_x with the minimap, SARGE, SQUAD and COMMANDS widgets at their known places, the 16x459 edge strip at a-16);
  *             without it the bottom layout is not offered. panel_x is the panel's left edge in the frame (hud_right when open)
- *   map_rows  rows of the view (from its top) that lie on the map: wh, or fewer when the camera has run past the map's bottom edge under the
- *             bottom console (the game draws stale tiles there; the presenter covers them) */
-typedef struct { int ww, wh, a, hc, hud_right, capped, dialog; double zoom, eff; int hud_ok, panel_x; int map_rows; } hires_view_t;
+ *   shift_x/y  how far the picture shown is moved against the picture the game drew, in game pixels (the shown view's origin minus the drawn
+ *             one; 0 unless the camera is at a map edge and the player scrolls on by the UI's inset: the game's own clamp keeps what it draws on the
+ *             map, the presenter shifts it so the edge ends at the UI's boundary and covers the rest of the window with a flat band) */
+typedef struct { int ww, wh, a, hc, hud_right, capped, dialog; double zoom, eff; int hud_ok, panel_x; int shift_x, shift_y; } hires_view_t;
 int hires_view(hires_view_t* v);
 
 /* The view's dialog flag, set and cleared by vddraw.c's vdd_dialog_begin / vdd_dialog_end under the presenter's lock (any thread),
@@ -64,6 +65,10 @@ int hires_zoom_keys_ok(void);
  * effective zoom as now (the view is capped at 3840x2160 and at the map's size): no dead key presses. A notice names
  * the result (vdd_notice). Applied at the next panel update. */
 void hires_zoom_step(int dir);
+
+/* The opaque UI's insets, in game pixels of the view (how far the UI reaches into the view from its left, top, right and bottom side), set by the
+ * presenter's layout every frame (vddraw.c "opaque UI rectangles"). The camera wrapper uses them to keep the map's edges at the UI's boundary. */
+void hires_set_insets(int l, int t, int r, int b);
 
 /* From the mouse poll (game thread): goes back to 640x480 geometry once a mission has ended. */
 void hires_poll_state(void);
