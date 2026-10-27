@@ -137,3 +137,55 @@ locate pool/list counters; count SeqEvict sub_00460FD0 calls via a wrapper (dupc
 8. Docs: R_hires.md step 4, README keys table, HANDOFF; audit_repo.py clean.
 
 Files: scripts\run_lift.py, src\host\main.c (recomp_lookup_manual), new src\host\hires.c/.h, src\host\vddraw.c, src\host\mouse.c, scripts\build_host.bat (add hires.c), docs.
+
+
+## 9. Results: dialogs (R2, milestone 6) and limits (milestone 7), 2026-10-27
+
+### Mission screens (R2)
+Sub-states of the state-2 dispatch (0x00511DBC, table at 0x00426230, index = sub-state - 22; 33 = play):
+- 22: the instruction sheet / F1's strategic map (a full-screen bitmap, modal).
+- 23: the game menu (RETURN TO GAME, CONTROLS, AUDIO, ABORT MISSION; campaign missions add SAVE GAME and LOAD GAME).
+- 24: the HQ message box ("Message from HQ", OK).
+- 25: SAVE GAME, 26: LOAD GAME (campaign), 27: AUDIO, 28: CONTROLS. 29..31: delete / overwrite dialogs (not reached).
+- ABORT MISSION is a state change to the title (restore_640 already handled it); the loading screen is state 1.
+
+All of them are built for 640x480: a widget screen's base rect is a full SCREEN_W x SCREEN_H (read back: 0,0,1280,981 in
+hires), backdrops are centred on it, children sit at fixed positions. In hires the Controls and Audio screens came out torn
+(backdrop mid-view, fields and buttons in the corner) and the menu, sheet and HQ box were tiny at 1:1. Fix: wrap the state-2
+dispatch (0x004260C0): while the sub-state is 22..31 the game gets SCREEN_W/H = 640x480, SCREEN_CLIP and BLIT_RECT back,
+and the presenter shows the frame's 640x480 corner as a letterboxed picture (the menu rule); leaving re-applies the view's
+geometry and a full redraw. The backdrop behind a small dialog is the top-left 640x459 of the world at that moment (the
+battlefield is not recomposed while a dialog is up). Verified by screenshots against PLASTIC_HIRES=0: Controls identical,
+Audio, menu, HQ box, sheet, F1 map, Save and Load fine, return to play restores the hires view.
+
+### Limits (milestone 7)
+Counters in `--hires-log` ("limits" line, reset at each map load): row pool A (decals, cap 450 + budget 50) and pool B (troopers,
+vehicles, roaches, cap 90 + 10) fill, their eviction calls and entries dropped, SEQ evictions, depth list peak, dirty list
+peak, object table. Wrapped for it: RowPoolAEvict 0x4609D0, RowPoolBEvict 0x460CA0, SeqEvict 0x460FD0, ResetDirtyList
+0x41DCE0, DrawMapObjects 0x41E440 (none has split entries).
+
+Measured (Boot Camp: 1609 of 1700 objects; campaign map1 missions: 330 of 400):
+- Pools A and B stay at the 36 / 4 they start with (Boot Camp) or 0-1 / 0 (campaign): no eviction at any view size, so
+  nothing pops from the pools. SeqEvict never ran either (no sustained fire in the unattended runs: UNVERIFIED under heavy combat).
+- The dirty list peaks at 22..72 of 500 (idle or scrolling), never full, at 4K too.
+- The DEPTH LIST is the limit (500 nodes, filled by DrawMapObjects per redrawn region): peak 129 at 1280x960, 261 at 1920x1080,
+  483 at 2560x1440, over 500 from about 2600x1450 in Boot Camp's start area (density dependent).
+- What the game does when it overflows (read from the lift, confirmed by DrawMapObjects logs and 1:1 dumps): it splits the
+  region in two along the longer side and calls itself on the halves. Two faults at big views: (1) the vertical split (a region
+  wider than tall: every 16:9 view) never stores the second half's bottom, so it gets a stale stack value (8759320,
+  11049264 seen): the right half then covers the whole map column down, takes the first 500 objects and drops the rest, and
+  sprites are cut at the split line (at 3840x2160 the lower right lost trees, fences and signs; before/after dumps differ in
+  190k pixels there; the original 640x480 view never reaches it); (2) every split passes deep = 1 to the
+  halves, which then never split again but drop objects beyond 500, so a redraw holds at most 1000.
+- Repair, in the DrawMapObjects wrapper (nested calls only, so a view that fits is untouched): every half is clamped into its
+  parent's rectangle, a half over 64 px may split again (deep = 0), and the 1 px gap between halves is closed (second half
+  starts at the first's right edge). 3840x2160 then needs 424 objects at most per leaf (12 splits), the picture is complete (checked
+  against 1:1 dumps), no seam. PLASTIC_NO_DRAWFIX=1 turns it off.
+- Remaining cap: a leaf region of 64 px or less still holds 500 objects; a mission denser than Boot Camp at 4K zoom 1 is not
+  covered (no such save to run: UNVERIFIED). The object table (1700 in Boot Camp) is the game's own limit.
+- Time at 3840x2160 zoom 1 (PLASTIC_CAP=3840x2160 PLASTIC_VIEW=3840x2160, a 1280x800 window): presenter 57..61 fps throughout,
+  scrolling included; game thread per Flip 0.35 ms (1280x960), 0.41 (1920x1080), 0.47 (2560x1440), 0.54 (3200x1800),
+  0.57-0.60 (3840x2160) idle and 0.44 / 0.78 ms while scrolling at 1080p / 4K (max 2.5 ms; one 30..45 ms hitch at the first full
+  redraw after a load or zoom). The game loop spins (2900 loops/s at 1280x960, 1300 at 4K scrolling), so these are per-frame costs,
+  not a frame rate: far under 16.7 ms.
+- Not measured: the real 4K display (this PC is 1080p; the presenter uploads 4000x2181 = 8.7 MB per frame and held 60 fps).

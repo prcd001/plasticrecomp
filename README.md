@@ -78,7 +78,7 @@ cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > 
 |---|---|
 | Shift+Plus / Shift+Minus | in a mission: HUD smaller / larger, in half steps from 1x up to the window's fit size |
 | Plus / Minus | in a mission: battlefield zoom in / out through 1x, 1.5x, 2x, 3x, 4x (1x: one game pixel is one screen pixel, so a 1080p window shows 1920x1050 pixels of map) |
-| Escape | as in the original (skips movies, opens the mission menu) |
+| Escape | as in the original (skips movies, opens the mission menu). The mission's own screens (game menu, audio, controls, save, load, the HQ message, the instruction sheet and F1's map) are shown as the 640x480 picture they are built for, scaled like the menus, over the battlefield's top-left corner |
 | F12 (Shift+F12 backwards) | scaling mode, for the battlefield and the HUD alike: sharp-bilinear (default), nearest (whole-number scales only: the 640x480 picture of the menus, movies and dialogs and the HUD at the largest whole multiple that fits, black bars for the rest; the battlefield at a whole zoom (1x, 2x, 3x, 4x) in whole-pixel steps, up to zoom-1 black pixels at a window edge; the 1.5x zoom and a capped view stay smooth fit), smooth bilinear, scanlines (sharp-bilinear with each source row dimmed towards its edges; visible from 2x scale up). The title bar names the mode for 2 s |
 | F8 | mouse confine on / off: in a mission, the Windows cursor is kept inside the window's client area (ClipCursor). It is let go in the menus, in the mission's dialogs (game menu, audio, controls, the sheet), when the window loses the foreground (Alt-Tab, a click elsewhere), when minimised, and when the game ends. On by default; the title bar says "Mouse confine on/off" |
 | F9 | edge scrolling on / off. Off: the game's cursor is held 4 px inside its clamp rectangle, where the edge scroll (3 px) cannot fire, so the map scrolls only by the minimap and by following Sarge (the game has no keyboard scrolling). On by default |
@@ -107,7 +107,7 @@ the focus (chat, names, save names) and no mission dialog is up, so they can be 
 | `--raw-mouse` | the game gets DirectInput's raw mouse counts, as in 1999 (default: it follows the Windows cursor) |
 | `--mouse-log` | log the game's mouse device calls and each cursor correction |
 | `--movie-log` | every 2 s: movie frames decoded, SmackWait go/hold, frames presented, foreground |
-| `--hires-log` | every 2 s in a mission: view size, zoom, game frame time (Flip to Flip), presenter fps, the camera's eye (0x514E0C) |
+| `--hires-log` | every 2 s in a mission: view size, zoom, game frame time (Flip to Flip), presenter fps, the camera's eye (0x514E0C), the mission state; and a `limits` line: row pools A (decals, cap 450) and B (troopers, vehicles, roaches, cap 90) with their evictions, SEQ evictions, the depth list's peak (500) and the dirty list's (500), the object table |
 | `--dd-trace` | log the virtual DirectDraw's surfaces and window messages |
 | `--imports` | with `--watchdog`: where each USER32/GDI32/DINPUT import slot really points |
 | `--no-route` | with `--cnc-ddraw`: leave USER32 as native32 bound it, skipping cnc-ddraw's hooks |
