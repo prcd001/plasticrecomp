@@ -597,6 +597,73 @@ void sub_00424AD0(void) {
     sub_00424AD0_lifted();
 }
 
+
+/* PLASTIC_HUD_DUMP=1 (diagnosis): once, 4 s after the first panel update of a mission, log the HUD's widget tree: each widget's vtable,
+ * its rectangles (+4..+0x10 and +0x14..+0x20) and its children (first child +0x24, next sibling +0x30). */
+static void hud_dump_node(uint32_t o, int depth, int* budget) {
+    for (; o && *budget > 0 && depth < 6; o = MEM32(o + 0x30)) {
+        (*budget)--;
+        fprintf(stderr, "[hud]%*s node %08X vt %08X  r4 %d,%d,%d,%d  r14 %d,%d,%d,%d  par %08X first %08X\n", depth * 2, "", o, MEM32(o),
+                (int)MEM32(o + 4), (int)MEM32(o + 8), (int)MEM32(o + 12), (int)MEM32(o + 16),
+                (int)MEM32(o + 0x14), (int)MEM32(o + 0x18), (int)MEM32(o + 0x1C), (int)MEM32(o + 0x20), MEM32(o + 0x28), MEM32(o + 0x24));
+        if (MEM32(o + 0x24)) hud_dump_node(MEM32(o + 0x24), depth + 1, budget);
+        if (depth == 0) break;
+    }
+}
+static void hud_dump(void) {
+    static DWORD t0;
+    static int done, serial_seen;
+    if (!getenv("PLASTIC_HUD_DUMP")) return;
+    if (serial_seen != (int)g_mission_serial) { serial_seen = (int)g_mission_serial; done = 0; t0 = 0; }
+    DWORD now = GetTickCount();
+    if (!t0) t0 = now;
+    if (done || now - t0 < 4000) return;
+    done = 1;
+    fprintf(stderr, "[hud] objects: 4FCF00 %08X  4FCF54 %08X  4FCF4C %08X  4FCF04.. ", MEM32(0x4FCF00), MEM32(0x4FCF54), MEM32(0x4FCF4C));
+    for (int i = 0; i < 18; i++) fprintf(stderr, "%08X ", MEM32(0x4FCF04 + 4 * i));
+    fprintf(stderr, "\n[hud] g_hud_right %d A %d Hc %d; screen %dx%d; BLIT %d,%d,%d,%d\n", g_hud_right, g_a, g_hc, (int)MEM32(ADDR_SCREEN_W), (int)MEM32(ADDR_SCREEN_H),
+            (int)MEM32(ADDR_BLIT), (int)MEM32(ADDR_BLIT + 4), (int)MEM32(ADDR_BLIT + 8), (int)MEM32(ADDR_BLIT + 12));
+    int budget = 300;
+    hud_dump_node(MEM32(0x4FCF54), 0, &budget);
+    hud_dump_node(MEM32(0x4FCF4C), 0, &budget);
+    hud_dump_node(MEM32(0x4FCF00), 0, &budget);
+}
+
+/* The HUD's widget tree as the bottom layout needs it (vddraw.c cuts the column into slices at fixed rows of the panel). The slice rows
+ * were measured on the panel's own bitmap: minimap [0,148), SARGE inventory [148,230), SQUAD [230,410) (header 22 rows, the portrait's
+ * inset 76, the member grid 83), COMMANDS [410,459). The widgets confirm them: a widget's rectangle (panel-relative +4..+0x10) starts at
+ * 10, 148, 230 and 409 and the panel is 144x459, the edge strip 16x459 at a-16. Anything else (the multiplayer panel, a mod) leaves
+ * hud_ok at 0 and the layout stays classic. Called every frame after the panel's update (game thread). */
+static void hud_measure(void) {
+    static int said;
+    int ok = 0, panel_x = 0;
+    uint32_t pan = MEM32(0x004FCF54u), strip = MEM32(0x004FCF4Cu);
+    if (pan && strip && MEM32(pan) == 0x0046F944u && MEM32(strip) == 0x0046F960u) {
+        int mm = 0, sg = 0, sq = 0, cm = 0, bad = 0;
+        panel_x = (int)MEM32(pan + 0x14);
+        for (uint32_t c = MEM32(pan + 0x24); c && !bad; c = MEM32(c + 0x30)) {
+            int x = (int)MEM32(c + 4), y = (int)MEM32(c + 8), w = (int)MEM32(c + 12), h = (int)MEM32(c + 16);
+            switch (MEM32(c)) {
+            case 0x0046F8B8u: mm = x == 6 && y == 10 && w == 132 && h == 132; bad |= !mm; break;
+            case 0x0046F8CCu: sg = x == 0 && y == 148 && w == 144 && h == 80; bad |= !sg; break;
+            case 0x0046F8E0u: sq = x == 0 && y == 230 && w == 144 && h == 230; bad |= !sq; break;
+            case 0x0046F8F4u: cm = x == 0 && y == 409 && w == 144 && h == 48; bad |= !cm; break;
+            default: break;
+            }
+        }
+        ok = mm && sg && sq && cm && !bad &&
+             (int)MEM32(pan + 0xC) == 144 && (int)MEM32(pan + 0x10) == 459 && (int)MEM32(pan + 0x18) == 21 &&
+             (int)MEM32(strip + 0x14) == g_a - 16 && (int)MEM32(strip + 0xC) == 16 && (int)MEM32(strip + 0x10) == 459 && (int)MEM32(strip + 0x18) == 21;
+    }
+    static int bad_frames;
+    bad_frames = ok ? 0 : bad_frames + 1;
+    if (!said && bad_frames > 600) { said = 1; fprintf(stderr, "[hires] the HUD's widget tree is not the one the bottom layout was measured on: classic layout only\n"); }
+    lock();
+    g_view.hud_ok = ok;
+    g_view.panel_x = panel_x;
+    unlock();
+}
+
 static void panel_update(void) {
     static volatile LONG seen;
     first_hit(&seen, "panel update 0x004193C0");
@@ -606,6 +673,7 @@ static void panel_update(void) {
         return;
     }
     InterlockedIncrement(&g_loops);
+    hud_dump();
     {
         int zi = (int)g_zoom_want, cw, ch;
         if (client_size(&cw, &ch) &&
@@ -629,6 +697,7 @@ static void panel_update(void) {
                 g_view.hud_right = hr;
                 unlock();
             }
+            hud_measure();
         }
     }
 }

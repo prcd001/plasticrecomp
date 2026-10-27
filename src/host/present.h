@@ -69,6 +69,11 @@ int  present_screenshot_result(char* out, int n);
  * Returns 1 if the point is on the picture, 0 if it is on a bar (or nothing was presented). */
 int  present_window_to_frame(int cx, int cy, int* fx, int* fy);
 
+/* The index of the topmost drawn region under a client pixel (-1: none), and the frame pixel a client pixel maps to through region 0
+ * alone, whatever is drawn over it (the bottom HUD layout's edge scrolling over the console). */
+int  present_region_at(int cx, int cy);
+int  present_window_to_frame_region0(int cx, int cy, int* fx, int* fy);
+
 void present_shutdown(void);
 
 #ifdef __cplusplus

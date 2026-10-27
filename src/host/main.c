@@ -234,9 +234,17 @@ static DWORD WINAPI movie_status(LPVOID unused) {
 /* ---------------------------------------------------------------- plastic.ini */
 
 /* Command-line overrides of the ini (the environment's PLASTIC_* variables override it too). -1: not given. */
-static int g_flag_fullscreen = -1, g_flag_vsync = -1, g_flag_scaling = -1;
+static int g_flag_fullscreen = -1, g_flag_vsync = -1, g_flag_scaling = -1, g_flag_hud_layout = -1;
 static const char* g_ini_path;
 static int g_no_ini;
+
+/* "classic" | "bottom" (or 0 / 1); -1 when not recognised */
+static int hud_layout_from_name(const char* s) {
+    if (!s || !*s) return -1;
+    if (!_stricmp(s, "classic") || !_stricmp(s, "right") || !strcmp(s, "0")) return 0;
+    if (!_stricmp(s, "bottom") || !_stricmp(s, "console") || !strcmp(s, "1")) return 1;
+    return -1;
+}
 
 static int env_int(const char* name, int* out) {
     const char* v = getenv(name);
@@ -256,6 +264,10 @@ static void apply_config(void) {
     if (cfg_has("fullscreen")) vdd_set_fullscreen(cfg_get_int("fullscreen", 0));
     if (cfg_has("confine")) vdd_set_confine(cfg_get_int("confine", 1));
     if (cfg_has("edge_scroll")) vdd_set_edge_scroll(cfg_get_int("edge_scroll", 1));
+    if (cfg_has("hud_layout")) {
+        int l = hud_layout_from_name(cfg_get_str("hud_layout"));
+        if (l >= 0) vdd_set_hud_layout(l); else fprintf(stderr, "[config] hud_layout = %s: unknown, ignored\n", cfg_get_str("hud_layout"));
+    }
     if (cfg_has("scaling")) {
         const char* s = cfg_get_str("scaling");
         int m = present_mode_from_name(s);
@@ -269,13 +281,18 @@ static void apply_config(void) {
         int m = present_mode_from_name(getenv("PLASTIC_SCALING"));
         if (m >= 0) present_set_mode(m);
     }
+    if (getenv("PLASTIC_HUD_LAYOUT")) {
+        int l = hud_layout_from_name(getenv("PLASTIC_HUD_LAYOUT"));
+        if (l >= 0) vdd_set_hud_layout(l);
+    }
+    if (g_flag_hud_layout >= 0) vdd_set_hud_layout(g_flag_hud_layout);
     if (g_flag_vsync >= 0) present_set_vsync(g_flag_vsync);
     if (g_flag_fullscreen >= 0) vdd_set_fullscreen(g_flag_fullscreen);
     if (g_flag_scaling >= 0) present_set_mode(g_flag_scaling);
     /* (PLASTIC_ZOOM, PLASTIC_HIRES and PLASTIC_UI_HALVES are read where they were always read: hires_init, the layout) */
-    fprintf(stderr, "[config] start: scaling %s, fullscreen %d, vsync %d, zoom %gx, ui_scale %d, confine %d, edge_scroll %d\n",
+    fprintf(stderr, "[config] start: scaling %s, fullscreen %d, vsync %d, zoom %gx, ui_scale %d, confine %d, edge_scroll %d, hud layout %s\n",
             present_mode_name(present_get_mode()), vdd_get_fullscreen(), present_get_vsync(), hires_get_zoom_value(), vdd_get_ui_halves(),
-            vdd_get_confine(), vdd_get_edge_scroll());
+            vdd_get_confine(), vdd_get_edge_scroll(), vdd_get_hud_layout() ? "bottom" : "classic");
 }
 
 /* The game's exit (ExitProcess): the settings that can change while playing are written back. A run that
@@ -296,6 +313,7 @@ static void save_config(void) {
     cfg_set_int("vsync", present_get_vsync());
     cfg_set_int("confine", vdd_get_confine());
     cfg_set_int("edge_scroll", vdd_get_edge_scroll());
+    cfg_set_str("hud_layout", vdd_get_hud_layout() ? "bottom" : "classic");
     cfg_save();
 }
 
@@ -702,6 +720,10 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--fullscreen")) g_flag_fullscreen = 1;
         else if (!strcmp(argv[i], "--windowed")) g_flag_fullscreen = 0;
         else if (!strcmp(argv[i], "--vsync") && i + 1 < argc) g_flag_vsync = atoi(argv[++i]) != 0;
+        else if (!strcmp(argv[i], "--hud-layout") && i + 1 < argc) {
+            g_flag_hud_layout = hud_layout_from_name(argv[++i]);
+            if (g_flag_hud_layout < 0) fprintf(stderr, "--hud-layout: classic or bottom\n");
+        }
         else if (!strcmp(argv[i], "--scaling") && i + 1 < argc) {
             g_flag_scaling = present_mode_from_name(argv[++i]);
             if (g_flag_scaling < 0) { fprintf(stderr, "--scaling: sharp, nearest, smooth or scanlines\n"); return 1; }

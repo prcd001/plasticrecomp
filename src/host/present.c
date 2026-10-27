@@ -122,7 +122,7 @@ typedef struct {
 } params_t;
 
 /* The regions of the last presented frame, for present_window_to_frame. */
-#define MAX_REGIONS 8
+#define MAX_REGIONS 16
 static present_region_t s_regions[MAX_REGIONS];
 static int s_nregions;
 
@@ -719,6 +719,33 @@ void present_frame_regions(const uint8_t* pixels, int pitch, int w, int h, const
     hr = IDXGISwapChain_Present(s_sc, s_vsync ? 1 : 0, 0);
     if (lost(hr)) recover(hr);
     /* The flip model unbinds the back buffer on Present; it is bound again next frame. */
+}
+
+/* The index of the topmost region (a drawn one, not map_only) under a client pixel, or -1. */
+int present_region_at(int cx, int cy)
+{
+    for (int r = s_nregions - 1; r >= 0; r--) {
+        const present_region_t* g = &s_regions[r];
+        if (!g->map_only && cx >= g->dx && cx < g->dx + g->dw && cy >= g->dy && cy < g->dy + g->dh) return r;
+    }
+    return -1;
+}
+
+/* The same mapping as present_window_to_frame, but through region 0 alone (the battlefield, however much is drawn over it),
+ * clamped into its source rectangle. 0 when there is no region 0. */
+int present_window_to_frame_region0(int cx, int cy, int* fx, int* fy)
+{
+    const present_region_t* g = &s_regions[0];
+    if (s_nregions < 1 || g->map_only || g->dw <= 0 || g->dh <= 0) return 0;
+    int x = g->sx + (int)floor(((cx - g->dx) + 0.5) * g->sw / g->dw);
+    int y = g->sy + (int)floor(((cy - g->dy) + 0.5) * g->sh / g->dh);
+    if (x > g->sx + g->sw - 1) x = g->sx + g->sw - 1;
+    if (y > g->sy + g->sh - 1) y = g->sy + g->sh - 1;
+    if (x < g->sx) x = g->sx;
+    if (y < g->sy) y = g->sy;
+    if (fx) *fx = x;
+    if (fy) *fy = y;
+    return 1;
 }
 
 int present_window_to_frame(int cx, int cy, int* fx, int* fy)

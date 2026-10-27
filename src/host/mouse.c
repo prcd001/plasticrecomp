@@ -292,7 +292,7 @@ static int script_target(POINT* t, int* click_now) {
  * main row and numpad (zoom, HUD scale), unless a text field has the focus or a dialog is up, where the
  * Controls screen can bind them (hires_zoom_keys_ok). Shipped bindings use none of these. */
 static void swallow_host_keys(BYTE* k) {
-    static const BYTE host[] = { 0x3D, 0x42, 0x44, 0x57, 0x58, 0x54, 0xB7 };
+    static const BYTE host[] = { 0x3D, 0x41, 0x42, 0x43, 0x44, 0x57, 0x58, 0x54, 0xB7 };
     for (size_t i = 0; i < sizeof host; i++) k[host[i]] = 0;
     if ((k[0x38] | k[0xB8]) & 0x80) k[0x1C] = k[0x9C] = 0;
     if (hires_zoom_keys_ok()) k[0x0C] = k[0x0D] = k[0x4A] = k[0x4E] = 0;

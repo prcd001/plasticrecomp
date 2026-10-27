@@ -36,8 +36,11 @@ void hires_disable(void);
  *   dialog    a widget screen of the mission (game menu, audio, controls) is up: the game is in the 640x480
  *             geometry and the frame's 640x480 corner is the picture
  *   zoom      the zoom the view was made for: the one asked for, or the larger one the surfaces' limit forces
- *   eff       the zoom the window really shows: window / view (below 1 the presenter shrinks the view) */
-typedef struct { int ww, wh, a, hc, hud_right, capped, dialog; double zoom, eff; } hires_view_t;
+ *   eff       the zoom the window really shows: window / view (below 1 the presenter shrinks the view)
+ *   hud_ok    the HUD's widget tree is the one the bottom layout's slices were measured on (single player: a 144x459 panel at
+ *             panel_x with the minimap, SARGE, SQUAD and COMMANDS widgets at their known places, the 16x459 edge strip at a-16);
+ *             without it the bottom layout is not offered. panel_x is the panel's left edge in the frame (hud_right when open) */
+typedef struct { int ww, wh, a, hc, hud_right, capped, dialog; double zoom, eff; int hud_ok, panel_x; } hires_view_t;
 int hires_view(hires_view_t* v);
 
 /* The view's dialog flag, set and cleared by vddraw.c's vdd_dialog_begin / vdd_dialog_end under the presenter's lock (any thread),
