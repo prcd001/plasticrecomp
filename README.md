@@ -39,18 +39,17 @@ which belongs to its rights holders, nor in pcrecomp or cnc-ddraw (both MIT, the
 ## What you need
 
 - Windows 10 or 11, 64-bit (the host and the lifted game are 32-bit).
-- Visual Studio 2022 Build Tools with the C++ x86 tools (`build_host.bat` calls `vcvars32.bat` from
-  `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools`; edit that line for another install).
-- PowerShell 7 (`pwsh`) and Python 3.11.
+- Four tools, installed once: [Git](https://git-scm.com/download/win), [Python 3](https://www.python.org/downloads/)
+  (3.11 is the tested one; tick "Add python.exe to PATH"), [PowerShell 7](https://aka.ms/powershell) (`pwsh`) and
+  [Build Tools for Visual Studio 2022](https://aka.ms/vs/17/release/vs_BuildTools.exe) with the "Desktop development with
+  C++" workload (`build_host.bat` finds it; `VCVARS32` can point at another `vcvars32.bat`).
 - Your own copy of Army Men II (see Rules).
-- The third-party pieces, which are not in this repository (`third_party/` is gitignored):
-  - pcrecomp at the commit pinned in `NOTES.md`:
-    `git clone https://github.com/sp00nznet/pcrecomp third_party/pcrecomp`, then check out that commit;
-  - cnc-ddraw v7.1.0.0 from its [releases](https://github.com/FunkyFr3sh/cnc-ddraw/releases): put
-    `cnc-ddraw.zip` in `third_party/cnc-ddraw/` and unpack it into `third_party/cnc-ddraw/v7.1.0.0/`
-    (`NOTES.md` has the zip's SHA-256);
-  - a virtual environment with the lifter's two packages:
-    `py -3.11 -m venv .venv`, then `.venv\Scripts\pip install capstone pefile`.
+- The third-party pieces are not in this repository (`third_party/` and `.venv` are gitignored). **`Setup.bat` fetches them
+  for you on its first run:** pcrecomp (cloned at the commit pinned in `NOTES.md`), cnc-ddraw v7.1.0.0 (downloaded from its
+  GitHub release and checked against the SHA-256 in `NOTES.md`) and a `.venv` with the lifter's two packages (`capstone`,
+  `pefile`). `scripts\setup.ps1 -NoFetch` downloads nothing: put them in place by hand (clone
+  `https://github.com/sp00nznet/pcrecomp` into `third_party/pcrecomp`, unpack `cnc-ddraw.zip` into
+  `third_party/cnc-ddraw/v7.1.0.0/`, `py -3.11 -m venv .venv`, then `.venv\Scripts\pip install capstone pefile`).
 
 ## Layout
 
@@ -71,8 +70,9 @@ which belongs to its rights holders, nor in pcrecomp or cnc-ddraw (both MIT, the
 
 ## Start it easily
 
-- **First time:** get the pieces under "What you need", then double-click `Setup.bat`. It asks for the folder with your own `ArmyMen2.exe` (disc, copy or install) and
-  runs `scripts\setup.ps1`: it copies the game, lifts it and builds the host.
+- **First time:** install the four tools under "What you need", then double-click `Setup.bat`. It asks for the folder with your own
+  `ArmyMen2.exe` (the disc's drive letter such as `E:\` is fine, or a copy or an install; Enter alone looks for GOG and Steam) and
+  runs `scripts\setup.ps1`: it fetches the third-party pieces, copies the game, lifts it and builds the host. Expect several minutes.
 - **Every time after:** double-click `Play.bat`. It checks the build and the game folder, refuses a second copy, starts the
   game and keeps the output in `build\last_run.log`. Options pass through: `Play.bat --fullscreen`.
 - The retail disc build wants the disc (or a mounted image of it) when you pick SINGLE PLAYER or BOOT CAMP.
@@ -92,7 +92,7 @@ cmd /c "build\plasticrecomp.exe --game game > build\user_run.log 2>&1"
 - **Only one copy at a time.** The game allows a single copy (its mutex `ArmyMenMutex`), and the host
   says so if one is already running.
 - **First-time setup for any owner** (disc, GOG or Steam): `pwsh scripts\setup.ps1 -From <game folder>`.
-  It copies the game into `game\`, puts cnc-ddraw in place, lifts that exe and builds the host. Without
+  It fetches pcrecomp, cnc-ddraw and the `.venv` when they are missing, copies the game into `game\`, puts cnc-ddraw in place, lifts that exe and builds the host. Without
   `-From` it looks up GOG's and Steam's install records. Pass `-From` to choose the copy yourself.
 - **`scripts/run_lift.py`** is pcrecomp's default pipeline plus the jump-table arms it misses. Plain
   `python -m tools` output crashes in memmove. It also records which exe it lifted

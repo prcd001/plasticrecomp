@@ -1,7 +1,7 @@
 @echo off
 rem Setup.bat - one-time setup: copies your own Army Men II files, lifts them and builds the host.
-rem Needs your own copy of the game (retail disc folder, GOG or Steam install), PowerShell 7 (pwsh),
-rem Python and the Visual Studio build tools (see README.md).
+rem Needs your own copy of the game (retail disc, GOG or Steam install), Git, Python 3, PowerShell 7 (pwsh)
+rem and the Visual Studio 2022 Build Tools (see README.md). Fetches pcrecomp, cnc-ddraw and a .venv itself.
 setlocal
 cd /d "%~dp0"
 

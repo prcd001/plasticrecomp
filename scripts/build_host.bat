@@ -4,7 +4,8 @@ rem runtime and src\host. Run from the project root; the log is build\build.log.
 rem GEN_OPT picks the optimisation for the lifted C (default /O1; /Od builds in seconds).
 setlocal
 set VSLANG=1033
-call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars32.bat" >nul 2>&1
+if "%VCVARS32%"=="" set "VCVARS32=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars32.bat"
+call "%VCVARS32%" >nul 2>&1
 if not exist build\obj mkdir build\obj
 if "%GEN_OPT%"=="" set GEN_OPT=/O1
 set RT=third_party\pcrecomp\runtime
