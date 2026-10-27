@@ -52,7 +52,8 @@ typedef struct pal {
 typedef struct surf {
     const void* const* vtbl;
     LONG refs;
-    int w, h, pitch;
+    int w, h, pitch;                    /* w x h: the logical size; the DIB holds cap_w x cap_h (>= w x h) */
+    int cap_w, cap_h;
     uint8_t* px;
     HBITMAP dib;
     HDC dc;
@@ -96,12 +97,34 @@ STUB(6, void* a, void* b, void* c, void* d, void* e, void* f)
 
 static const void* const g_surf_vtbl[36];
 
-static surf_t* new_surface(int w, int h, DWORD caps) {
+/* Capacity: the big surfaces (primary, its back buffer, the world surface) are allocated once at
+ * the largest size the host will ever show (g_cap_w x g_cap_h, set from the monitor when the
+ * primary is created), and their logical w x h then change with vdd_set_logical. Everything the
+ * game reads back is the logical size; the pitch is the capacity's, as on real hardware, where
+ * the game must (and does) use lPitch. */
+static int g_cap_w, g_cap_h;
+static int g_world_pending;             /* the next offscreen surface created is the world surface */
+
+static void compute_capacity(void) {
+    int mw = GetSystemMetrics(SM_CXSCREEN), mh = GetSystemMetrics(SM_CYSCREEN);
+    int wmax = (mw < 3840 ? mw : 3840), hmax = (mh < 2160 ? mh : 2160);
+    wmax = (wmax + 15) & ~15, hmax = (hmax + 15) & ~15;
+    if (wmax < 640) wmax = 640;
+    if (hmax < 480) hmax = 480;
+    g_cap_w = wmax + 160;               /* the HUD column beside the largest battlefield */
+    g_cap_h = hmax + 21 > 480 ? hmax + 21 : 480;
+    fprintf(stderr, "[ddraw] capacity %dx%d (monitor %dx%d)\n", g_cap_w, g_cap_h, mw, mh);
+}
+
+static surf_t* new_surface(int w, int h, DWORD caps, int cap_w, int cap_h) {
     surf_t* s = (surf_t*)calloc(1, sizeof *s);
     s->vtbl = g_surf_vtbl;
     s->refs = 1;
     s->w = w, s->h = h;
-    s->pitch = (w + 3) & ~3;
+    s->cap_w = cap_w > w ? cap_w : w;
+    s->cap_h = cap_h > h ? cap_h : h;
+    s->pitch = (s->cap_w + 3) & ~3;
+    h = s->cap_h;                       /* the DIB below is allocated at capacity */
     s->caps = caps;
     struct { BITMAPINFOHEADER h; RGBQUAD c[256]; } bi = { 0 };
     bi.h.biSize = sizeof bi.h;
@@ -424,22 +447,28 @@ static HRESULT WINAPI dd_CreateSurface(void* t, DDSURFACEDESC* d, surf_t** out, 
     DWORD caps = (d->dwFlags & DDSD_CAPS) ? d->ddsCaps.dwCaps : 0;
     surf_t* s;
     if (caps & DDSCAPS_PRIMARYSURFACE) {
-        s = new_surface(g_mode_w, g_mode_h, caps);
+        if (!g_cap_w) compute_capacity();
+        s = new_surface(g_mode_w, g_mode_h, caps, g_cap_w, g_cap_h);
         if (!s) return DDERR_OUTOFMEMORY;
         s->primary = 1;
         if ((d->dwFlags & DDSD_BACKBUFFERCOUNT) && d->dwBackBufferCount) {
-            s->back = new_surface(g_mode_w, g_mode_h, DDSCAPS_BACKBUFFER);
+            s->back = new_surface(g_mode_w, g_mode_h, DDSCAPS_BACKBUFFER, g_cap_w, g_cap_h);
             if (!s->back) return DDERR_OUTOFMEMORY;
         }
         g_primary = s;
+        g_world_pending = 1;
         if (!InterlockedExchange(&g_running, 1)) CloseHandle(CreateThread(NULL, 0, presenter, NULL, 0, NULL));
     } else {
         int w = (d->dwFlags & DDSD_WIDTH) ? (int)d->dwWidth : g_mode_w;
         int h = (d->dwFlags & DDSD_HEIGHT) ? (int)d->dwHeight : g_mode_h;
-        s = new_surface(w, h, caps);
+        /* the first offscreen surface after the primary, at the mode's size, is the world surface
+         * (sub_0041AA10 creates it right after the flip chain): capacity too */
+        int big = g_world_pending && w == g_mode_w && h == g_mode_h;
+        g_world_pending = 0;
+        s = new_surface(w, h, caps, big ? g_cap_w : 0, big ? g_cap_h : 0);
         if (!s) return DDERR_OUTOFMEMORY;
     }
-    if (vdd_trace) fprintf(stderr, "[ddraw] CreateSurface caps 0x%lX -> %dx%d %p\n", caps, s->w, s->h, (void*)s);
+    if (vdd_trace) fprintf(stderr, "[ddraw] CreateSurface caps 0x%lX -> %dx%d (capacity %dx%d) %p\n", caps, s->w, s->h, s->cap_w, s->cap_h, (void*)s);
     *out = s;
     return DD_OK;
 }
@@ -565,6 +594,7 @@ static const void* const g_dd2_vtbl[24] = { DD_COMMON(dd2_SetDisplayMode), dd2_G
  * (Plus / Minus alone are kept for the battlefield zoom of step 4.) */
 #define ADDR_GAME_STATE 0x00511DA4u
 #define ADDR_BLIT_RIGHT 0x00485328u
+#define ADDR_WORLD_SURFACE 0x00503100u  /* the game's world surface (a COM pointer) */
 #define STATE_MISSION 2
 
 static volatile LONG g_ui_halves;       /* UI scale x2; 0 = follow the world */
@@ -591,7 +621,20 @@ static int layout(int cw, int ch, int w, int h, present_region_t* rg) {
         force = f && *f == '1';
         if (u) g_ui_halves = atoi(u);
     }
-    if (w != 640 || h != 480 || (!force && (int)MEM32(ADDR_GAME_STATE) != STATE_MISSION)) return 0;
+    /* Outside missions (menus, movies, loading) the picture is the 640x480 corner of the primary,
+     * letterboxed whole, however large the primary's logical size is. A frame of exactly 640x480
+     * takes present_frame_regions' own whole-frame path. */
+    const int MW = 640, MH = 480;
+    if (w < MW || h < MH) return 0;
+    if (!force && (int)MEM32(ADDR_GAME_STATE) != STATE_MISSION) {
+        if (w == MW && h == MH) return 0;
+        double f = (double)cw / MW < (double)ch / MH ? (double)cw / MW : (double)ch / MH;
+        rg[0].sx = 0, rg[0].sy = 0, rg[0].sw = MW, rg[0].sh = MH;
+        rg[0].dw = (int)(MW * f + 0.5), rg[0].dh = (int)(MH * f + 0.5);
+        rg[0].dx = (cw - rg[0].dw) / 2, rg[0].dy = (ch - rg[0].dh) / 2;
+        return 1;
+    }
+    w = MW, h = MH;                     /* the mission layout below is 640x480 geometry */
     double s = (double)cw / w < (double)ch / h ? (double)cw / w : (double)ch / h;
     int pw = (int)(w * s + 0.5), ph = (int)(h * s + 0.5);
     int px = (cw - pw) / 2, py = (ch - ph) / 2;
@@ -634,14 +677,22 @@ static DWORD WINAPI presenter(LPVOID unused) {
         fprintf(stderr, "[ddraw] presenter could not start\n");
         return 1;
     }
-    static uint8_t frame[1600 * 1200];
+    /* the largest frame the primary can hold; the logical size inside it changes */
+    size_t frame_size = (size_t)(g_cap_w ? g_cap_w : 1600) * (size_t)(g_cap_h ? g_cap_h : 1200);
+    uint8_t* frame = (uint8_t*)malloc(frame_size);
+    if (!frame) { fprintf(stderr, "[ddraw] presenter: no memory for the frame\n"); return 1; }
     PALETTEENTRY pal[256];
+    /* test switch: PLASTIC_LOGICAL_PROBE=WxH sets the big surfaces' logical size once the game has made
+     * its world surface, to prove the 640x480 picture does not depend on it */
+    int probe_w = 0, probe_h = 0, probe_done = 0;
+    if (getenv("PLASTIC_LOGICAL_PROBE")) sscanf(getenv("PLASTIC_LOGICAL_PROBE"), "%dx%d", &probe_w, &probe_h);
     for (;;) {
         int w, h;
+        if (probe_w && !probe_done && MEM32(ADDR_WORLD_SURFACE)) probe_done = vdd_set_logical(probe_w, probe_h) ? 1 : -1;
         EnterCriticalSection(&g_lock);
         surf_t* p = g_primary;
         w = p->w, h = p->h;
-        if ((size_t)w * h <= sizeof frame)
+        if ((size_t)w * h <= frame_size)
             for (int y = 0; y < h; y++) memcpy(frame + y * w, p->px + y * p->pitch, (size_t)w);
         if (p->pal) memcpy(pal, p->pal->e, sizeof pal); else memset(pal, 0, sizeof pal);
         LeaveCriticalSection(&g_lock);
@@ -701,5 +752,43 @@ int vdd_cursor(POINT* p) {
     present_window_to_frame(c.x, c.y, &fx, &fy);
     if (fx < 0 || fy < 0) return 0;     /* nothing presented yet */
     p->x = fx, p->y = fy;
+    return 1;
+}
+
+/* The big surfaces' logical size (the game's SCREEN_W/H world). Needs capacity: the primary and its
+ * back buffer always have it; the world surface (guest pointer at 0x00503100) has it when it is
+ * the first offscreen surface the game made after the primary. Returns 1 on success, 0 (and logs)
+ * when a surface lacks the capacity, in which case nothing is changed. */
+int vdd_set_logical(int w, int h) {
+    if (!g_primary) return 0;
+    surf_t* world = (surf_t*)(uintptr_t)MEM32(ADDR_WORLD_SURFACE);
+    if (world && world->vtbl != g_surf_vtbl) world = NULL;       /* not one of ours: leave it */
+    int ok = w > 0 && h > 0 && w <= g_primary->cap_w && h <= g_primary->cap_h &&
+             (!g_primary->back || (w <= g_primary->back->cap_w && h <= g_primary->back->cap_h));
+    if (ok && world && (w > world->cap_w || h > world->cap_h)) ok = 0;
+    if (!ok) {
+        fprintf(stderr, "[ddraw] vdd_set_logical(%d,%d) refused: primary %dx%d, world surface %s%dx%d\n", w, h,
+                g_primary->cap_w, g_primary->cap_h, world ? "" : "none ", world ? world->cap_w : 0, world ? world->cap_h : 0);
+        return 0;
+    }
+    EnterCriticalSection(&g_lock);
+    g_primary->w = w, g_primary->h = h;
+    if (g_primary->back) g_primary->back->w = w, g_primary->back->h = h;
+    if (world) world->w = w, world->h = h;
+    LeaveCriticalSection(&g_lock);
+    if (vdd_trace) fprintf(stderr, "[ddraw] logical size %dx%d (world surface %p)\n", w, h, (void*)world);
+    return 1;
+}
+
+void vdd_get_logical(int* w, int* h) {
+    EnterCriticalSection(&g_lock);
+    *w = g_primary ? g_primary->w : g_mode_w;
+    *h = g_primary ? g_primary->h : g_mode_h;
+    LeaveCriticalSection(&g_lock);
+}
+
+int vdd_capacity(int* w, int* h) {
+    if (!g_cap_w) compute_capacity();
+    *w = g_cap_w, *h = g_cap_h;
     return 1;
 }

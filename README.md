@@ -99,6 +99,9 @@ Test switches (environment variables, for diagnosis only):
 - `PLASTIC_NO_PRESENT=1`, `PLASTIC_NO_SUBCLASS=1`, `PLASTIC_NO_RESTYLE=1`, `PLASTIC_NO_DPI=1`:
   switch one piece of the virtual path off.
 - `PLASTIC_PRESENT_WARP=1`, `PLASTIC_PRESENT_BLT=1`: presenter fallbacks.
+- `PLASTIC_LOGICAL_PROBE=WxH`: once the game has made its world surface, set the primary, back buffer and
+  world surface's logical size to W x H (within the capacity), to check that menus, movies and the HUD
+  still show the 640x480 picture.
 - `PLASTIC_SCRIPT="t:x,y[,click];..."`: drives the game's cursor with no real mouse. From the first
   step whose time `t` (seconds since the host process started) has passed, the cursor target is game
   pixel x,y (640x480 menu or mission-screen pixels), whichever window has the foreground. With
