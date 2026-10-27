@@ -8,6 +8,9 @@ cd /d "%~dp0"
 echo Enter the folder that holds your ArmyMen2.exe (the disc, a copy of its files, or your install).
 echo Press Enter alone to let the script look for a GOG or Steam install.
 set /p FROM=Game folder:
+rem Typed quotes are dropped; a trailing backslash (E:\) would escape the closing quote of -From "..."
+if defined FROM set "FROM=%FROM:"=%"
+if defined FROM if "%FROM:~-1%"=="\" set "FROM=%FROM%."
 
 where pwsh >nul 2>nul
 if errorlevel 1 (
