@@ -608,6 +608,44 @@ static void set_fullscreen(int on) {
 int vdd_get_fullscreen(void) { return g_fullscreen || (!g_hwnd && g_fs_wanted); }
 void vdd_set_fullscreen(int on) { set_fullscreen(on); }
 
+/* ---- mouse confine (F8) and edge scroll (F9) ------------------------------------------------------
+ * The confine is ClipCursor to the window's client area, held only while a mission is played (hires_play_live)
+ * and the game's window is the foreground one; the 250 ms timer applies and drops it, window messages drop it
+ * at once, the ExitProcess shim and the crash and watchdog reports release it. A clip left behind by a dead
+ * process is reset by Windows, but the cursor is the user's, so every exit path lets go itself. */
+static volatile LONG g_confine = 1, g_edge_scroll = 1;
+static volatile LONG g_clip_on;
+static RECT g_clip_rc;
+int  vdd_get_confine(void) { return (int)g_confine; }
+void vdd_set_confine(int on) { InterlockedExchange(&g_confine, on != 0); }
+int  vdd_get_edge_scroll(void) { return (int)g_edge_scroll; }
+void vdd_set_edge_scroll(int on) { InterlockedExchange(&g_edge_scroll, on != 0); }
+
+void vdd_release_cursor(void) {
+    if (g_clip_on) {
+        ClipCursor(NULL);
+        g_clip_on = 0;
+        fprintf(stderr, "[host] mouse released\n");
+    }
+}
+
+static void update_confine(void) {
+    RECT rc;
+    POINT a, b;
+    int want = g_confine && g_hwnd && !IsIconic(g_hwnd) && GetForegroundWindow() == g_hwnd && hires_play_live();
+    if (!want || !GetClientRect(g_hwnd, &rc) || rc.right <= 0 || rc.bottom <= 0) { vdd_release_cursor(); return; }
+    a.x = rc.left, a.y = rc.top, b.x = rc.right, b.y = rc.bottom;
+    ClientToScreen(g_hwnd, &a);
+    ClientToScreen(g_hwnd, &b);
+    RECT r = { a.x, a.y, b.x, b.y };
+    if (!g_clip_on || memcmp(&r, &g_clip_rc, sizeof r)) {
+        if (ClipCursor(&r)) {
+            if (!g_clip_on) fprintf(stderr, "[host] mouse confined to %ld,%ld-%ld,%ld\n", r.left, r.top, r.right, r.bottom);
+            g_clip_on = 1, g_clip_rc = r;
+        }
+    }
+}
+
 /* The host's own keys. Returns 1 when the message is taken. */
 static int host_key(UINT msg, WPARAM wp, LPARAM lp) {
     int rep = (lp & 0x40000000) != 0;
@@ -629,6 +667,14 @@ static int host_key(UINT msg, WPARAM wp, LPARAM lp) {
         if (!rep) present_request_screenshot(g_shot_dir);
         return 1;
     }
+    if (wp == VK_F8) {
+        if (!rep) { vdd_set_confine(!g_confine); notice("Mouse confine %s", g_confine ? "on" : "off"); update_confine(); }
+        return 1;
+    }
+    if (wp == VK_F9) {
+        if (!rep) { vdd_set_edge_scroll(!g_edge_scroll); notice("Edge scroll %s", g_edge_scroll ? "on" : "off"); }
+        return 1;
+    }
     return 0;
 }
 static LRESULT CALLBACK keep_active(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -636,7 +682,10 @@ static LRESULT CALLBACK keep_active(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         fprintf(stderr, "[ddraw] window msg 0x%X wp=%lX\n", msg, (unsigned long)wp);
     if (msg == WM_CLOSE || msg == WM_DESTROY || msg == WM_QUIT || (msg == WM_SYSCOMMAND && (wp & 0xFFF0) == SC_CLOSE))
         fprintf(stderr, "[ddraw] window msg 0x%X wp=%lX (closing)\n", msg, (unsigned long)wp);
-    if (msg == WM_TIMER && wp == HOST_TIMER) { update_title(); return 0; }
+    if (msg == WM_TIMER && wp == HOST_TIMER) { update_title(); update_confine(); return 0; }
+    if (msg == WM_KILLFOCUS || (msg == WM_ACTIVATEAPP && !wp) || (msg == WM_ACTIVATE && LOWORD(wp) == WA_INACTIVE) ||
+        (msg == WM_SYSCOMMAND && (wp & 0xFFF0) == SC_MINIMIZE))
+        vdd_release_cursor();                                            /* Alt-Tab, a click elsewhere, minimise */
     if (host_key(msg, wp, lp)) { update_title(); return 0; }
     if (msg == WM_KEYDOWN && (wp == VK_OEM_PLUS || wp == VK_ADD || wp == VK_OEM_MINUS || wp == VK_SUBTRACT)) {
         int dir = (wp == VK_OEM_PLUS || wp == VK_ADD) ? +1 : -1;
@@ -778,14 +827,14 @@ static int layout(int cw, int ch, int w, int h, present_region_t* rg) {
     int hires = hires_view(&hv) && hv.a == w && hv.hc == h && !hv.dialog;   /* a dialog is the 640x480 corner, like a menu */
     if (!hires && (w != MW || h != MH || (!force && (int)MEM32(ADDR_GAME_STATE) != STATE_MISSION))) {
         if (w == MW && h == MH) return 0;
-        double f = (double)cw / MW < (double)ch / MH ? (double)cw / MW : (double)ch / MH;
+        double f = present_fit_scale(cw, ch, MW, MH);
         rg[0].sx = 0, rg[0].sy = 0, rg[0].sw = MW, rg[0].sh = MH;
         rg[0].dw = (int)(MW * f + 0.5), rg[0].dh = (int)(MH * f + 0.5);
         rg[0].dx = (cw - rg[0].dw) / 2, rg[0].dy = (ch - rg[0].dh) / 2;
         return 1;
     }
     /* the UI scale: the HUD pieces' size; never beyond what makes the 640x480 mission screen fit */
-    double s = (double)cw / MW < (double)ch / MH ? (double)cw / MW : (double)ch / MH;
+    double s = present_fit_scale(cw, ch, MW, MH);
     double u = g_ui_halves ? g_ui_halves / 2.0 : s;
     if (u > s) u = s;
     int n = 0;
@@ -793,10 +842,19 @@ static int layout(int cw, int ch, int w, int h, present_region_t* rg) {
         /* step 4: the battlefield fills the window (src (0,21,Ww,Wh) of the frame), the HUD is drawn over it:
          * the top strip across the window's top, the panel column anchored to the right edge */
         rg[n].sx = 0, rg[n].sy = STRIP_Y, rg[n].sw = hv.ww, rg[n].sh = hv.wh;
-        if (!hv.capped) {
+        double zr = floor(hv.zoom + 0.5);
+        if (!hv.capped && present_get_mode() == PRESENT_NEAREST && zr >= 1.0 && fabs(hv.zoom - zr) < 1e-6) {
+            /* nearest at a whole zoom: every game pixel is zr x zr screen pixels, the odd rest of the window is
+             * a border (at most zr - 1 pixels a side) and the view's last row and column may be cut */
+            int z = (int)zr;
+            rg[n].sw = hv.ww < cw / z ? hv.ww : cw / z;
+            rg[n].sh = hv.wh < ch / z ? hv.wh : ch / z;
+            rg[n].dw = rg[n].sw * z, rg[n].dh = rg[n].sh * z;
+            rg[n].dx = (cw - rg[n].dw) / 2, rg[n].dy = (ch - rg[n].dh) / 2;
+        } else if (!hv.capped) {
             rg[n].dx = 0, rg[n].dy = 0, rg[n].dw = cw, rg[n].dh = ch;
         } else {                        /* the view cannot cover the window: one uniform scale, centred */
-            double k = (double)cw / hv.ww < (double)ch / hv.wh ? (double)cw / hv.ww : (double)ch / hv.wh;
+            double k = present_fit_scale(cw, ch, hv.ww, hv.wh);
             rg[n].dw = (int)(hv.ww * k + 0.5), rg[n].dh = (int)(hv.wh * k + 0.5);
             rg[n].dx = (cw - rg[n].dw) / 2, rg[n].dy = (ch - rg[n].dh) / 2;
         }
@@ -981,12 +1039,20 @@ static int cursor_from_client(POINT c, POINT* p) {
     if (fx < 0 || fy < 0) return 0;     /* nothing presented yet */
     p->x = fx, p->y = fy;
     /* Edge scroll (sub_00424CA0) acts on the game cursor within 3 px of its clamp rectangle, which in
-     * the hires frame is bigger than the world's picture: the window's border pixels stand for it. */
+     * the hires frame is bigger than the world's picture: the window's border pixels stand for it. With
+     * the edge scroll switched off (F9) the cursor is kept 4 px inside the clamp rectangle instead. */
     hires_view_t hv;
     RECT rc;
-    if (hires_view(&hv) && !hv.dialog && GetClientRect(g_hwnd, &rc)) {
+    if (g_edge_scroll && hires_view(&hv) && !hv.dialog && GetClientRect(g_hwnd, &rc)) {
         if (c.x <= 1) p->x = 0; else if (c.x >= rc.right - 2) p->x = hv.a - 1;
         if (c.y <= 1) p->y = 0; else if (c.y >= rc.bottom - 2) p->y = hv.hc - 1;
+    }
+    if (!g_edge_scroll && (int)MEM32(ADDR_GAME_STATE) == STATE_MISSION) {
+        int l = (int)MEM32(0x00485310u), t = (int)MEM32(0x00485314u), r = (int)MEM32(0x00485318u), b = (int)MEM32(0x0048531Cu);
+        if (r - l > 10 && b - t > 10) {
+            if (p->x < l + 4) p->x = l + 4; else if (p->x > r - 5) p->x = r - 5;
+            if (p->y < t + 4) p->y = t + 4; else if (p->y > b - 5) p->y = b - 5;
+        }
     }
     return 1;
 }

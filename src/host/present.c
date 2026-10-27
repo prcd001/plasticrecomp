@@ -386,6 +386,13 @@ int present_mode_from_name(const char* s)
     return -1;
 }
 
+double present_fit_scale(int cw, int ch, int w, int h)
+{
+    double s = (double)cw / w < (double)ch / h ? (double)cw / w : (double)ch / h;
+    if (s_filter == PRESENT_NEAREST && s >= 1.0) s = floor(s + 1e-9);   /* integer scale: bars take the rest */
+    return s;
+}
+
 void present_set_vsync(int on) { s_vsync = on ? 1 : 0; }
 int  present_get_vsync(void) { return s_vsync; }
 
@@ -596,8 +603,8 @@ void present_frame_regions(const uint8_t* pixels, int pitch, int w, int h, const
         s_pal_valid = 1;
     }
 
-    /* Letterbox: largest w:h rectangle that fits, centred on whole pixels. */
-    scale = (double)cw / w < (double)ch / h ? (double)cw / w : (double)ch / h;
+    /* Letterbox: largest w:h rectangle that fits (whole multiples only in nearest mode), centred on whole pixels. */
+    scale = present_fit_scale(cw, ch, w, h);
     dw = (int)(w * scale + 0.5);
     dh = (int)(h * scale + 0.5);
     if (dw > cw) dw = cw;

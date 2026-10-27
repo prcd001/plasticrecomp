@@ -43,6 +43,11 @@ const char* present_mode_name(int mode);         /* "sharp-bilinear", "nearest",
 int         present_mode_from_name(const char* s);   /* a digit or the name's first letters; -1 if unknown */
 void        present_set_filter(int mode);        /* old API: 0 nearest, otherwise sharp-bilinear */
 
+/* The scale at which a w x h picture is shown in a cw x ch window: the largest that fits, and in nearest
+ * mode the largest whole multiple (bars take the rest; a window smaller than the picture still gets the
+ * fractional fit). The presenter's own letterbox and the layouts in vddraw.c use it. */
+double present_fit_scale(int cw, int ch, int w, int h);
+
 /* vsync on (default): Present waits for the vertical blank. Off: Present returns at once (tearing possible). */
 void present_set_vsync(int on);
 int  present_get_vsync(void);

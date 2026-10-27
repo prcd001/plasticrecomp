@@ -92,7 +92,8 @@ void cfg_save(void) {
     if (!f) { fprintf(stderr, "[config] cannot write %s\n", g_path); return; }
     fprintf(f, "# plasticrecomp settings: written when the game exits, read at start.\n"
                "# zoom 0..4 (1x 1.5x 2x 3x 4x); ui_scale in half steps (0 = follow the window);\n"
-               "# scaling sharp-bilinear|nearest|smooth|scanlines; fullscreen, hires, vsync 0|1.\n");
+               "# scaling sharp-bilinear|nearest|smooth|scanlines; fullscreen, hires, vsync 0|1;\n"
+               "# confine (F8: keep the mouse in the window in a mission), edge_scroll (F9) 0|1.\n");
     for (int i = 0; i < g_n; i++) fprintf(f, "%s = %s\n", g_kv[i].key, g_kv[i].val);
     fclose(f);
     fprintf(stderr, "[config] wrote %s\n", g_path);

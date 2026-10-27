@@ -22,7 +22,8 @@ paths, the host exit code and the [script]/[hires]/[ddraw] lines of the log.
   -Keys / -Script override the default PLASTIC_KEYS / PLASTIC_SCRIPT strings; -Env sets more
   environment variables (e.g. @{PLASTIC_ZOOM='2'}).
   -Do runs window actions at given times, e.g. -Do '70:maximize','90:restore','100:size 1000 700',
-  '110:key OemPlus', '105:syskey Enter', '108:close' (WM_KEYDOWN / WM_KEYUP posted to the game's window: it reaches the window procedure, not DirectInput). They need no extra -Shots entry.
+  '110:key OemPlus', '105:syskey Enter', '108:close', '60:focus' / '60:unfocus' (the game / the desktop to the foreground), '61:clip' (print the cursor
+  clip rectangle, the client rect and the real cursor), '62:warp 100 200' (move the real cursor to a client pixel; negative: from the right / bottom) (WM_KEYDOWN / WM_KEYUP posted to the game's window: it reaches the window procedure, not DirectInput). They need no extra -Shots entry.
 #>
 param(
     [string]$Tag = 'run',
@@ -77,6 +78,30 @@ public static class AbWin {
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+    [StructLayout(LayoutKind.Sequential)] public struct PT { public int X, Y; }
+    [DllImport("user32.dll")] public static extern bool GetClipCursor(out RECT r);
+    [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] public static extern bool ClientToScreen(IntPtr h, ref PT p);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern bool GetCursorPos(out PT p);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern IntPtr GetShellWindow();
+    [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+    public static string Clip(IntPtr h) {
+        RECT c; GetClipCursor(out c);
+        RECT cl; GetClientRect(h, out cl);
+        PT a = new PT { X = 0, Y = 0 }; ClientToScreen(h, ref a);
+        PT p; GetCursorPos(out p);
+        return string.Format("clip {0},{1}-{2},{3}  client at {4},{5} size {6}x{7}  cursor {8},{9}  foreground={10}", c.L, c.T, c.R, c.B, a.X, a.Y, cl.R, cl.B, p.X, p.Y, GetForegroundWindow() == h);
+    }
+    public static void Unfocus() { SetForegroundWindow(GetShellWindow()); }
+    public static void Focus(IntPtr h) { SetForegroundWindow(h); }   // (an Alt tap to unlock this would open the game window's system menu and block it)
+    public static void Warp(IntPtr h, int cx, int cy) {   // client pixel (negative: from the right / bottom edge)
+        RECT cl; GetClientRect(h, out cl);
+        PT a = new PT { X = cx < 0 ? cl.R + cx : cx, Y = cy < 0 ? cl.B + cy : cy }; ClientToScreen(h, ref a); SetCursorPos(a.X, a.Y);
+    }
 }
 '@
 }
@@ -118,6 +143,10 @@ foreach ($ev in $timeline) {
                     [AbWin]::PostMessage($h, 0x105, [IntPtr]$vk, [IntPtr]0xE0000001) | Out-Null
                 }
             }
+            'clip'     { Write-Host ("auto_bootcamp[$Tag]: t=$t s: " + [AbWin]::Clip($h)) }
+            'focus'    { [AbWin]::Focus($h) }
+            'unfocus'  { [AbWin]::Unfocus() }
+            'warp'     { [AbWin]::Warp($h, [int]$a[1], [int]$a[2]) }
             'close'    { [AbWin]::PostMessage($h, 0x10, [IntPtr]0, [IntPtr]0) | Out-Null }   # WM_CLOSE: the game exits through ExitProcess (the ini is written)
             default    { Write-Host "auto_bootcamp[$Tag]: unknown -Do action '$($ev.Arg)'" }
         }
@@ -140,6 +169,7 @@ if (-not $p.WaitForExit([math]::Max(0, [int](($Duration - $clock.Elapsed.TotalSe
     $null = $p.WaitForExit(5000)
 }
 Get-Process plasticrecomp -ErrorAction Ignore | Stop-Process -Force
+if ($Do.Count) { Start-Sleep -Milliseconds 500; Write-Host ("auto_bootcamp[$Tag]: after the kill: " + [AbWin]::Clip([IntPtr]::Zero)) }
 $code = $p.ExitCode
 Write-Host ("auto_bootcamp[{0}]: exit code {1}{2}, after {3:N1} s, {4} screenshot(s)" -f $Tag, $code, $(if ($killed) { ' (killed at the deadline)' }), $clock.Elapsed.TotalSeconds, $taken.Count)
 Select-String -Path $log -Pattern '^\[(script|hires|ddraw)\]|error|trap|fault' | ForEach-Object { $_.Line } | Select-Object -First 40

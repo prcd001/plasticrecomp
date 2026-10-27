@@ -79,7 +79,9 @@ cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > 
 | Shift+Plus / Shift+Minus | in a mission: HUD smaller / larger, in half steps from 1x up to the window's fit size |
 | Plus / Minus | in a mission: battlefield zoom in / out through 1x, 1.5x, 2x, 3x, 4x (1x: one game pixel is one screen pixel, so a 1080p window shows 1920x1050 pixels of map) |
 | Escape | as in the original (skips movies, opens the mission menu) |
-| F12 (Shift+F12 backwards) | scaling mode, for the battlefield and the HUD alike: sharp-bilinear (default), nearest, smooth bilinear, scanlines (sharp-bilinear with each source row dimmed towards its edges; visible from 2x scale up). The title bar names the mode for 2 s |
+| F12 (Shift+F12 backwards) | scaling mode, for the battlefield and the HUD alike: sharp-bilinear (default), nearest (whole-number scales only: the 640x480 picture of the menus, movies and dialogs and the HUD at the largest whole multiple that fits, black bars for the rest; the battlefield at a whole zoom (1x, 2x, 3x, 4x) in whole-pixel steps, up to zoom-1 black pixels at a window edge; the 1.5x zoom and a capped view stay smooth fit), smooth bilinear, scanlines (sharp-bilinear with each source row dimmed towards its edges; visible from 2x scale up). The title bar names the mode for 2 s |
+| F8 | mouse confine on / off: in a mission, the Windows cursor is kept inside the window's client area (ClipCursor). It is let go in the menus, in the mission's dialogs (game menu, audio, controls, the sheet), when the window loses the foreground (Alt-Tab, a click elsewhere), when minimised, and when the game ends. On by default; the title bar says "Mouse confine on/off" |
+| F9 | edge scrolling on / off. Off: the game's cursor is held 4 px inside its clamp rectangle, where the edge scroll (3 px) cannot fire, so the map scrolls only by the minimap and by following Sarge (the game has no keyboard scrolling). On by default |
 | F11, Alt+Enter | borderless fullscreen on the window's monitor and back; leaving restores the window's rect (maximised or not). The battlefield re-fits the new size |
 | F3 | FPS readout in the title bar: presenter fps, frame time (average, max) and the game loop's rate. (Borderless fullscreen has no title bar, so the notices and this line are not visible there) |
 | F10, PrintScreen | screenshot: a PNG of the picture as presented (palette lookup and scaling done, window-sized) in `game\screenshots\plastic_<date>_<time>.png`; the title bar names the file |
@@ -130,10 +132,12 @@ scaling = sharp-bilinear   # nearest | sharp-bilinear | smooth | scanlines (or 0
 fullscreen = 0        # borderless fullscreen
 hires = 1             # 0: the battlefield stays 640x480 as in the original
 vsync = 1             # 0: Present does not wait for the vertical blank (the 60 fps cap stays)
+confine = 1           # F8: keep the mouse in the window while a mission is played
+edge_scroll = 1       # F9: scroll the map when the mouse is at the window's edge
 ```
 
 For one run, environment variables override the file (`PLASTIC_ZOOM`, `PLASTIC_UI_HALVES`, `PLASTIC_HIRES`,
-`PLASTIC_SCALING`, `PLASTIC_FULLSCREEN`, `PLASTIC_VSYNC`), and command-line flags override both.
+`PLASTIC_SCALING`, `PLASTIC_FULLSCREEN`, `PLASTIC_VSYNC`, `PLASTIC_CONFINE`, `PLASTIC_EDGE_SCROLL`), and command-line flags override both.
 
 Test switches (environment variables, for diagnosis only):
 - `PLASTIC_HIRES=0`: the battlefield stays 640x480 as in the original (the old layout; `1` turns the feature on).

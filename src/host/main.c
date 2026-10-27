@@ -253,6 +253,8 @@ static void apply_config(void) {
     if (cfg_has("hires")) hires_set_enabled(cfg_get_int("hires", 1));
     if (cfg_has("vsync")) present_set_vsync(cfg_get_int("vsync", 1));
     if (cfg_has("fullscreen")) vdd_set_fullscreen(cfg_get_int("fullscreen", 0));
+    if (cfg_has("confine")) vdd_set_confine(cfg_get_int("confine", 1));
+    if (cfg_has("edge_scroll")) vdd_set_edge_scroll(cfg_get_int("edge_scroll", 1));
     if (cfg_has("scaling")) {
         const char* s = cfg_get_str("scaling");
         int m = present_mode_from_name(s);
@@ -260,6 +262,8 @@ static void apply_config(void) {
     }
     if (env_int("PLASTIC_VSYNC", &v)) present_set_vsync(v);
     if (env_int("PLASTIC_FULLSCREEN", &v)) vdd_set_fullscreen(v);
+    if (env_int("PLASTIC_CONFINE", &v)) vdd_set_confine(v);
+    if (env_int("PLASTIC_EDGE_SCROLL", &v)) vdd_set_edge_scroll(v);
     if (getenv("PLASTIC_SCALING")) {
         int m = present_mode_from_name(getenv("PLASTIC_SCALING"));
         if (m >= 0) present_set_mode(m);
@@ -268,8 +272,9 @@ static void apply_config(void) {
     if (g_flag_fullscreen >= 0) vdd_set_fullscreen(g_flag_fullscreen);
     if (g_flag_scaling >= 0) present_set_mode(g_flag_scaling);
     /* (PLASTIC_ZOOM, PLASTIC_HIRES and PLASTIC_UI_HALVES are read where they were always read: hires_init, the layout) */
-    fprintf(stderr, "[config] start: scaling %s, fullscreen %d, vsync %d, zoom %d, ui_scale %d\n",
-            present_mode_name(present_get_mode()), vdd_get_fullscreen(), present_get_vsync(), hires_get_zoom(), vdd_get_ui_halves());
+    fprintf(stderr, "[config] start: scaling %s, fullscreen %d, vsync %d, zoom %d, ui_scale %d, confine %d, edge_scroll %d\n",
+            present_mode_name(present_get_mode()), vdd_get_fullscreen(), present_get_vsync(), hires_get_zoom(), vdd_get_ui_halves(),
+            vdd_get_confine(), vdd_get_edge_scroll());
 }
 
 /* The game's exit (ExitProcess): the settings that can change while playing are written back. A run that
@@ -282,12 +287,15 @@ static void save_config(void) {
     cfg_set_int("fullscreen", vdd_get_fullscreen());
     cfg_set_int("hires", cfg_get_int("hires", 1));        /* no runtime switch: kept, or written once so it can be found */
     cfg_set_int("vsync", present_get_vsync());
+    cfg_set_int("confine", vdd_get_confine());
+    cfg_set_int("edge_scroll", vdd_get_edge_scroll());
     cfg_save();
 }
 
 /* The game's own exit: logged, so a run that ends without a fault says who ended it. */
 static void shim_ExitProcess(void) {
     fprintf(stderr, "\n[exit] ExitProcess(%u) from sub_%08X\n", ARG(0), g_cur_func);
+    vdd_release_cursor();
     save_config();
     native32_dump_icalls(10);
     ExitProcess(ARG(0));
@@ -409,6 +417,7 @@ static LONG WINAPI crash(EXCEPTION_POINTERS* ep) {
     static volatile LONG once;
     EXCEPTION_RECORD* r = ep->ExceptionRecord;
     if (InterlockedExchange(&once, 1)) TerminateProcess(GetCurrentProcess(), 3);
+    vdd_release_cursor();
     fprintf(stderr, "\n=== fault 0x%08lX at 0x%p, thread %lu ===\n", r->ExceptionCode,
             r->ExceptionAddress, GetCurrentThreadId());
     if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2) {
@@ -485,6 +494,7 @@ static void report_imports(void) {
 static DWORD WINAPI watchdog(LPVOID unused) {
     (void)unused;
     Sleep(g_watchdog_s * 1000);
+    vdd_release_cursor();
     fprintf(stderr, "\n[watchdog] %lu s: in sub_%08X, last native call %s, %u indirect calls\n",
             g_watchdog_s, g_cur_func, g_cur_import, g_icall_count);
     if (!g_cnc_ddraw) fprintf(stderr, "[watchdog] presenter: %ld frames shown\n", vdd_presented);

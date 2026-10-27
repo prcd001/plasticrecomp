@@ -218,9 +218,15 @@ void hires_poll_state(void) {
 /* ------------------------------------------------------------------- M1 */
 
 static volatile LONG g_loading;         /* from the map load to the first panel update */
+static volatile LONG g_mission_serial;  /* map loads so far */
+static LONG g_mission_serial_n(void) { return g_mission_serial; }
 
 int hires_loading(void) { return g_loading; }
-static volatile LONG g_mission_serial;
+
+/* A mission is being played: the state-2 frame runs, its map has loaded and no dialog is up (sub-state 33). */
+int hires_play_live(void) {
+    return (int)MEM32(ADDR_STATE) == STATE_MISSION && g_mission_serial_n() > 0 && !g_loading && MEM32(0x00511DBCu) == 33;
+}
 int hires_mission_serial(void) { return (int)g_mission_serial; }
 
 /* M1's writes: the screen is the whole frame A x Hc, so the surfaces and the tile cache are made for the

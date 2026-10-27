@@ -36,6 +36,8 @@ int hires_view(hires_view_t* v);
 
 /* Nonzero from a mission's map load until its first panel update (the loading screen; test dumps). */
 int hires_loading(void);
+/* A mission is being played now (loaded, not in a dialog): the mouse is confined to the window only then. */
+int hires_play_live(void);
 /* Counts the mission map loads so far (test scripts' state clock, mouse.c). */
 int hires_mission_serial(void);
 

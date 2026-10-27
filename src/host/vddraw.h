@@ -28,6 +28,15 @@ int  vdd_capacity(int* w, int* h);
 int  vdd_get_fullscreen(void);
 void vdd_set_fullscreen(int on);
 
+/* F8: keep the mouse inside the window while a mission is played (ClipCursor; released in menus, dialogs, when the
+ * window loses the foreground, and on exit). F9: edge scrolling (off: the game's cursor never gets within 4 px of its
+ * clamp rectangle's edge, so nothing scrolls). Both default to on; plastic.ini keeps them. */
+int  vdd_get_confine(void);
+void vdd_set_confine(int on);
+int  vdd_get_edge_scroll(void);
+void vdd_set_edge_scroll(int on);
+void vdd_release_cursor(void);          /* any thread: ClipCursor(NULL) if the host set a clip */
+
 /* Where F10 / PrintScreen put their PNGs (default: "screenshots" in the working folder). */
 void vdd_set_screenshot_dir(const char* dir);
 
