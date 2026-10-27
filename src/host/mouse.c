@@ -119,7 +119,6 @@ int mouse_raw;
  * scaling, no acceleration. So X=+5 then Y=+3 moves X by 10. To place the
  * cursor exactly, each axis' delta is followed by a zero for that axis:
  * X=dx, X=0, Y=dy, Y=0, and the real button events come after them. */
-static HWND g_game_hwnd;
 static int g_cycle_start = 1;
 static struct { DWORD ofs; LONG data; } g_queue[8];
 static int g_queued, g_head;
@@ -349,8 +348,11 @@ static void queue_motion(void) {
     }
     scripted = script_target(&t, &click_now);
     if (!scripted) {                        /* (a button-up owed from the last cycle stays queued) */
-        if (!g_game_hwnd) g_game_hwnd = FindWindowA("Armymen2", NULL);
-        if (!g_game_hwnd || GetForegroundWindow() != g_game_hwnd) return;
+        /* the game's window has the foreground: any window of this process (its class name is the guest's own and
+         * differs by edition: "Armymen2", the Russian one "Armymen3") */
+        DWORD fg_pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &fg_pid);
+        if (fg_pid != GetCurrentProcessId()) return;
         /* the virtual DirectDraw's mapping, or cnc-ddraw's GetCursorPos hook */
         if (mouse_target ? !mouse_target(&t) : !GetCursorPos(&t)) return;
     }
