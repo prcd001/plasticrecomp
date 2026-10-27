@@ -13,6 +13,9 @@ original 1999 code, lifted to C, runs natively on a 32-bit host. The host adds:
 - a HUD that scales separately from the battlefield;
 - a battlefield that fills the window, however big, with zoom (Plus / Minus).
 
+Tested with three editions of the game: the original English retail CD, the Russian edition (GSC, WebColl) and the GOG
+release. Multiplayer is only in the disc builds (see "Multiplayer").
+
 Status: the project is a work in progress and has had little play testing. What was measured: `NOTES.md`. The resolution plan: `docs/R_hires.md`.
 
 ## Rules
@@ -149,6 +152,9 @@ the focus (chat, names, save names) and no mission dialog is up, so they can be 
 | `--ini FILE`, `--no-ini` | use that settings file / neither read nor write one |
 
 ### Multiplayer
+
+**Not available from a GOG install:** multiplayer was cut from the GOG release (the 2017 re-release; Steam's store page also lists
+single-player only), so the game's menu has no network game there. Multiplayer needs the retail disc build (English or Russian).
 
 The game's network play (LAN, TCP/IP) goes through Windows' legacy DirectPlay and works with the host's own
 DirectDraw; it was tested between two PCs on a LAN (lobby, deployment screen, mission, ESC / ABORT).
