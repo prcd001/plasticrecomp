@@ -38,6 +38,7 @@ Where the work stands: `docs/HANDOFF.md`. What was measured: `NOTES.md`. The res
 | `src/host/vddraw.c` | the virtual DirectDraw (COM objects, DIB-section surfaces), the window, the presenter thread and the HUD/battlefield layout | yes |
 | `src/host/present.c` | the D3D11 presenter: palette lookup in the shader, nearest/sharp-bilinear, regions at different scales | yes |
 | `src/host/hires.c` | step 4: host wrappers that run in front of lifted functions (map load, HUD create, panel update, HudPaint, cursor draw, edge scroll, state requests) and make the battlefield as big as the window: the game's screen geometry, zoom, the HUD column | yes |
+| `src/host/config.c` | `plastic.ini`: read at start, written on exit |  yes |
 | `src/host/mouse.c` | the game's DirectInput mouse, fed from the Windows cursor | yes |
 | `scripts/` | lift (`run_lift.py`), setup for disc/GOG/Steam owners (`setup.ps1`), host build, presenter test, run, screenshot, key and hashing tools, the unattended Boot Camp run (`auto_bootcamp.ps1`, `compare_shots.py`) | yes |
 | `docs/` | `HANDOFF.md`, `R_hires.md` (resolution research and plan), `PROVENANCE.md` (the disc copies) | yes |
@@ -78,6 +79,10 @@ cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > 
 | Shift+Plus / Shift+Minus | in a mission: HUD smaller / larger, in half steps from 1x up to the window's fit size |
 | Plus / Minus | in a mission: battlefield zoom in / out through 1x, 1.5x, 2x, 3x, 4x (1x: one game pixel is one screen pixel, so a 1080p window shows 1920x1050 pixels of map) |
 | Escape | as in the original (skips movies, opens the mission menu) |
+| F12 (Shift+F12 backwards) | scaling mode, for the battlefield and the HUD alike: sharp-bilinear (default), nearest, smooth bilinear, scanlines (sharp-bilinear with each source row dimmed towards its edges; visible from 2x scale up). The title bar names the mode for 2 s |
+| F11, Alt+Enter | borderless fullscreen on the window's monitor and back; leaving restores the window's rect (maximised or not). The battlefield re-fits the new size |
+| F3 | FPS readout in the title bar: presenter fps, frame time (average, max) and the game loop's rate. (Borderless fullscreen has no title bar, so the notices and this line are not visible there) |
+| F10, PrintScreen | screenshot: a PNG of the picture as presented (palette lookup and scaling done, window-sized) in `game\screenshots\plastic_<date>_<time>.png`; the title bar names the file |
 
 ## Host options
 
@@ -98,6 +103,28 @@ cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > 
 | `--route-gdi` | with `--cnc-ddraw`: also route GDI32 (breaks movie colours; for experiments) |
 | `--native-trace`, `--callbacks` | native32's per-call traces (huge) |
 | `--dplay-check` | create the game's DirectPlay object and list its connections, then exit |
+| `--fullscreen`, `--windowed` | start in borderless fullscreen / in a window (overrides `plastic.ini`) |
+| `--scaling MODE`, `--vsync 0\|1` | start with that scaling mode (`sharp`, `nearest`, `smooth`, `scanlines`) / vsync (overrides `plastic.ini`) |
+| `--ini FILE`, `--no-ini` | use that settings file / neither read nor write one |
+
+### plastic.ini
+
+Settings that persist, read at start and written when the game exits (a run that is killed writes
+nothing). The host looks for `plastic.ini` next to `plasticrecomp.exe` first, then in the game folder,
+and writes back to the file it read (or next to the exe if there was none). `key = value` lines; `#` or
+`;` start a comment; unknown keys are ignored and kept.
+
+```ini
+zoom = 0              # battlefield zoom index: 0..4 = 1x, 1.5x, 2x, 3x, 4x
+ui_scale = 0          # HUD scale in half steps (2 = 1x, 3 = 1.5x ...); 0 = follows the window
+scaling = sharp-bilinear   # nearest | sharp-bilinear | smooth | scanlines (or 0..3)
+fullscreen = 0        # borderless fullscreen
+hires = 1             # 0: the battlefield stays 640x480 as in the original
+vsync = 1             # 0: Present does not wait for the vertical blank (the 60 fps cap stays)
+```
+
+For one run, environment variables override the file (`PLASTIC_ZOOM`, `PLASTIC_UI_HALVES`, `PLASTIC_HIRES`,
+`PLASTIC_SCALING`, `PLASTIC_FULLSCREEN`, `PLASTIC_VSYNC`), and command-line flags override both.
 
 Test switches (environment variables, for diagnosis only):
 - `PLASTIC_HIRES=0`: the battlefield stays 640x480 as in the original (the old layout; `1` turns the feature on).

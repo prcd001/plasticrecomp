@@ -22,7 +22,7 @@ paths, the host exit code and the [script]/[hires]/[ddraw] lines of the log.
   -Keys / -Script override the default PLASTIC_KEYS / PLASTIC_SCRIPT strings; -Env sets more
   environment variables (e.g. @{PLASTIC_ZOOM='2'}).
   -Do runs window actions at given times, e.g. -Do '70:maximize','90:restore','100:size 1000 700',
-  '110:key OemPlus' (WM_KEYDOWN / WM_KEYUP posted to the game's window: it reaches the window procedure, not DirectInput). They need no extra -Shots entry.
+  '110:key OemPlus', '105:syskey Enter', '108:close' (WM_KEYDOWN / WM_KEYUP posted to the game's window: it reaches the window procedure, not DirectInput). They need no extra -Shots entry.
 #>
 param(
     [string]$Tag = 'run',
@@ -39,6 +39,7 @@ param(
     [string[]]$HostArgs = @()
 )
 $ShotTimes = @($Shots -split ',' | Where-Object { $_ } | ForEach-Object { [int]$_ } | Sort-Object)   # also fine from pwsh -File
+$Do = @($Do -split ';' | Where-Object { $_ })   # from pwsh -File pass one string: -Do '66:key F3;68:key F12'
 $Ok = @($OkAt -split ',' | ForEach-Object { [int]$_ })
 $Click = @($ClickAt -split ',' | ForEach-Object { [int]$_ })
 $root = Split-Path $PSScriptRoot -Parent
@@ -109,6 +110,15 @@ foreach ($ev in $timeline) {
                     [AbWin]::PostMessage($h, 0x101, [IntPtr]$vk, [IntPtr]0xC0000001) | Out-Null
                 }
             }
+            'syskey'   {   # as 'key' but WM_SYSKEYDOWN / WM_SYSKEYUP with the Alt bit (Alt+Enter: 'syskey Enter'; F10 also arrives so)
+                foreach ($k in $a[1..($a.Count - 1)]) {
+                    $vk = [int][Enum]::Parse([System.ConsoleKey], $k, $true)
+                    [AbWin]::PostMessage($h, 0x104, [IntPtr]$vk, [IntPtr]0x20000001) | Out-Null
+                    Start-Sleep -Milliseconds 80
+                    [AbWin]::PostMessage($h, 0x105, [IntPtr]$vk, [IntPtr]0xE0000001) | Out-Null
+                }
+            }
+            'close'    { [AbWin]::PostMessage($h, 0x10, [IntPtr]0, [IntPtr]0) | Out-Null }   # WM_CLOSE: the game exits through ExitProcess (the ini is written)
             default    { Write-Host "auto_bootcamp[$Tag]: unknown -Do action '$($ev.Arg)'" }
         }
         Write-Host "auto_bootcamp[$Tag]: t=$t s: $($ev.Arg)"

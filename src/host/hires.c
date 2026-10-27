@@ -148,6 +148,9 @@ void hires_init(int log) {
 }
 
 void hires_disable(void) { g_enabled = 0; }
+void hires_set_enabled(int on) { g_enabled = on != 0; }
+void hires_set_zoom(int index) { g_zoom_want = index < 0 ? 0 : index >= N_ZOOM ? N_ZOOM - 1 : index; }
+int  hires_get_zoom(void) { return (int)g_zoom_want; }
 
 int hires_view(hires_view_t* v) {
     int act;

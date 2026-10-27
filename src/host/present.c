@@ -40,7 +40,9 @@ static const IID pr_IID_ID3D11Texture2D =
 /* Full-screen triangle; the pixel shader maps SV_Position (render-target pixels) to frame
  * texels: t = (pos - origin) * inv_scale. Nearest takes texel floor(t). Sharp-bilinear
  * (libretro interpolation/sharp-bilinear) squeezes the blend into a band of 1/prescale texel
- * around each texel edge, then blends the 4 nearest palette colours with those weights. */
+ * around each texel edge, then blends the 4 nearest palette colours with those weights. Smooth is the
+ * same blend with no band (plain bilinear on colours). Scanlines is sharp-bilinear with each source
+ * row darkened towards its edges (only where a source row is at least 2 screen pixels tall). */
 static const char k_hlsl[] =
 "Texture2D<uint>   frame_idx : register(t0);\n"
 "Texture2D<float4> palette   : register(t1);\n"
@@ -61,14 +63,17 @@ static const char k_hlsl[] =
 "    if (mode == 0) return float4(colour(int2(floor(t))), 1);\n"
 "    float2 tf = floor(t);\n"
 "    float2 d = (t - tf) - 0.5;\n"
-"    float  r = 0.5 - 0.5 / prescale;\n"
-"    float2 m = tf + (d - clamp(d, -r, r)) * prescale;\n" /* = mod_texel - 0.5 */
+"    float  pre = (mode == 2) ? 1.0 : prescale;\n"
+"    float  r = 0.5 - 0.5 / pre;\n"
+"    float2 m = tf + (d - clamp(d, -r, r)) * pre;\n" /* = mod_texel - 0.5 */
 "    float2 i0 = floor(m);\n"
 "    float2 w = m - i0;\n"
 "    int2 i = int2(i0);\n"
 "    float3 a = colour(i),             b = colour(i + int2(1, 0));\n"
 "    float3 c = colour(i + int2(0, 1)), e = colour(i + int2(1, 1));\n"
-"    return float4(lerp(lerp(a, b, w.x), lerp(c, e, w.x), w.y), 1);\n"
+"    float3 o = lerp(lerp(a, b, w.x), lerp(c, e, w.x), w.y);\n"
+"    if (mode == 3 && inv_scale.y <= 0.5) o *= 0.62 + 0.38 * sin((t.y - tf.y) * 3.14159265);\n"
+"    return float4(o, 1);\n"
 "}\n";
 
 typedef struct {
@@ -99,7 +104,11 @@ static ID3D11ShaderResourceView* s_pal_srv;
 static int  s_flip;              /* swap chain uses the flip model */
 static int  s_bb_w, s_bb_h;      /* back buffer size */
 static int  s_tex_w, s_tex_h;    /* frame texture size */
-static int  s_filter = 1;
+static int  s_filter = PRESENT_SHARP;
+static int  s_vsync = 1;
+static char s_shot_dir[MAX_PATH];        /* a screenshot is pending when this is not empty */
+static char s_shot_result[MAX_PATH];
+static volatile LONG s_shot_new;
 static PALETTEENTRY s_pal_cache[256];
 static int  s_pal_valid;
 /* Letterbox of the last presented frame, for present_window_to_frame. */
@@ -339,7 +348,173 @@ int present_init(HWND hwnd)
 
 void present_set_filter(int mode)
 {
-    s_filter = mode ? 1 : 0;
+    s_filter = mode ? PRESENT_SHARP : PRESENT_NEAREST;
+}
+
+/* F12's order: sharp-bilinear first (the default), then nearest, smooth, scanlines. */
+static const int k_cycle[PRESENT_NMODES] = { PRESENT_SHARP, PRESENT_NEAREST, PRESENT_SMOOTH, PRESENT_SCANLINES };
+static const char* const k_names[PRESENT_NMODES] = { "nearest", "sharp-bilinear", "smooth bilinear", "scanlines" };
+
+void present_set_mode(int mode)
+{
+    if (mode >= 0 && mode < PRESENT_NMODES) s_filter = mode;
+}
+
+int present_get_mode(void) { return s_filter; }
+
+int present_cycle_mode(int dir)
+{
+    int i = 0;
+    while (i < PRESENT_NMODES - 1 && k_cycle[i] != s_filter) i++;
+    i = (i + (dir < 0 ? PRESENT_NMODES - 1 : 1)) % PRESENT_NMODES;
+    s_filter = k_cycle[i];
+    return s_filter;
+}
+
+const char* present_mode_name(int mode)
+{
+    return mode >= 0 && mode < PRESENT_NMODES ? k_names[mode] : "?";
+}
+
+int present_mode_from_name(const char* s)
+{
+    int i;
+    if (!s || !*s) return -1;
+    if (s[0] >= '0' && s[0] <= '9' && !s[1]) return s[0] - '0' < PRESENT_NMODES ? s[0] - '0' : -1;
+    for (i = 0; i < PRESENT_NMODES; i++)
+        if (!_strnicmp(s, k_names[i], 3)) return i;
+    return -1;
+}
+
+void present_set_vsync(int on) { s_vsync = on ? 1 : 0; }
+int  present_get_vsync(void) { return s_vsync; }
+
+void present_request_screenshot(const char* dir)
+{
+    if (dir && *dir && !s_shot_dir[0]) strncpy(s_shot_dir, dir, MAX_PATH - 1);
+}
+
+int present_screenshot_result(char* out, int n)
+{
+    if (!InterlockedExchange(&s_shot_new, 0)) return 0;
+    if (out && n > 0) { strncpy(out, s_shot_result, n - 1); out[n - 1] = 0; }
+    return 1;
+}
+
+/* ---- PNG writer: 8-bit RGB, no filter, zlib "stored" blocks (no compressor needed) ---- */
+static uint32_t crc_table[256];
+static uint32_t crc_update(uint32_t c, const uint8_t* p, size_t n)
+{
+    size_t i;
+    if (!crc_table[1]) {
+        uint32_t k, j;
+        for (k = 0; k < 256; k++) {
+            uint32_t v = k;
+            for (j = 0; j < 8; j++) v = (v & 1) ? 0xEDB88320u ^ (v >> 1) : v >> 1;
+            crc_table[k] = v;
+        }
+    }
+    for (i = 0; i < n; i++) c = crc_table[(c ^ p[i]) & 0xFF] ^ (c >> 8);
+    return c;
+}
+static void put_be32(uint8_t* p, uint32_t v) { p[0] = (uint8_t)(v >> 24), p[1] = (uint8_t)(v >> 16), p[2] = (uint8_t)(v >> 8), p[3] = (uint8_t)v; }
+static void png_chunk(FILE* f, const char* type, const uint8_t* data, uint32_t n)
+{
+    uint8_t b[4];
+    uint32_t c;
+    put_be32(b, n); fwrite(b, 1, 4, f);
+    fwrite(type, 1, 4, f);
+    c = crc_update(0xFFFFFFFFu, (const uint8_t*)type, 4);
+    if (n) { fwrite(data, 1, n, f); c = crc_update(c, data, n); }
+    put_be32(b, ~c); fwrite(b, 1, 4, f);
+}
+/* rgb: w*h*3 bytes. Returns 1 on success. */
+static int write_png(const char* path, const uint8_t* rgb, int w, int h)
+{
+    static const uint8_t sig[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    FILE* f = fopen(path, "wb");
+    size_t rowb = (size_t)w * 3 + 1, rawn = rowb * h, off = 0;
+    uint8_t* raw, *z, hdr[13];
+    size_t zi = 0;
+    uint32_t a = 1, b = 0;
+    size_t i;
+    if (!f) return 0;
+    raw = (uint8_t*)malloc(rawn);
+    z = (uint8_t*)malloc(rawn + (rawn / 65535 + 1) * 5 + 16);
+    if (!raw || !z) { free(raw); free(z); fclose(f); return 0; }
+    for (i = 0; i < (size_t)h; i++) { raw[i * rowb] = 0; memcpy(raw + i * rowb + 1, rgb + i * (size_t)w * 3, (size_t)w * 3); }
+    z[zi++] = 0x78; z[zi++] = 0x01;
+    while (off < rawn) {
+        size_t n = rawn - off > 65535 ? 65535 : rawn - off;
+        z[zi++] = (off + n == rawn) ? 1 : 0;
+        z[zi++] = (uint8_t)n; z[zi++] = (uint8_t)(n >> 8); z[zi++] = (uint8_t)~n; z[zi++] = (uint8_t)(~n >> 8);
+        memcpy(z + zi, raw + off, n); zi += n; off += n;
+    }
+    for (i = 0; i < rawn; i++) { a = (a + raw[i]) % 65521; b = (b + a) % 65521; }
+    put_be32(z + zi, (b << 16) | a); zi += 4;
+    fwrite(sig, 1, 8, f);
+    put_be32(hdr, (uint32_t)w); put_be32(hdr + 4, (uint32_t)h);
+    hdr[8] = 8; hdr[9] = 2; hdr[10] = hdr[11] = hdr[12] = 0;
+    png_chunk(f, "IHDR", hdr, 13);
+    png_chunk(f, "IDAT", z, (uint32_t)zi);
+    png_chunk(f, "IEND", NULL, 0);
+    i = (size_t)ferror(f);
+    fclose(f);
+    free(raw); free(z);
+    return i == 0;
+}
+
+/* Read the back buffer (BGRA) into a PNG, before Present. Fills s_shot_result; clears the request. */
+static void save_screenshot(void)
+{
+    ID3D11Texture2D *bb = NULL, *st = NULL;
+    D3D11_TEXTURE2D_DESC td;
+    D3D11_MAPPED_SUBRESOURCE map;
+    uint8_t* rgb = NULL;
+    SYSTEMTIME t;
+    char path[MAX_PATH];
+    int ok = 0, x, y, n = 0;
+    FILE* ex;
+
+    CreateDirectoryA(s_shot_dir, NULL);
+    GetLocalTime(&t);
+    do {
+        if (n) _snprintf(path, MAX_PATH - 1, "%s\\plastic_%04d%02d%02d_%02d%02d%02d_%d.png", s_shot_dir, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, n);
+        else   _snprintf(path, MAX_PATH - 1, "%s\\plastic_%04d%02d%02d_%02d%02d%02d.png", s_shot_dir, t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+        path[MAX_PATH - 1] = 0;
+        ex = fopen(path, "rb");
+        if (ex) fclose(ex);
+    } while (ex && ++n < 100);
+
+    if (SUCCEEDED(IDXGISwapChain_GetBuffer(s_sc, 0, &pr_IID_ID3D11Texture2D, (void**)&bb))) {
+        ID3D11Texture2D_GetDesc(bb, &td);
+        td.Usage = D3D11_USAGE_STAGING;
+        td.BindFlags = 0;
+        td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        td.MiscFlags = 0;
+        if (SUCCEEDED(ID3D11Device_CreateTexture2D(s_dev, &td, NULL, &st))) {
+            ID3D11DeviceContext_CopyResource(s_ctx, (ID3D11Resource*)st, (ID3D11Resource*)bb);
+            if (SUCCEEDED(ID3D11DeviceContext_Map(s_ctx, (ID3D11Resource*)st, 0, D3D11_MAP_READ, 0, &map))) {
+                rgb = (uint8_t*)malloc((size_t)td.Width * td.Height * 3);
+                if (rgb) {
+                    for (y = 0; y < (int)td.Height; y++) {
+                        const uint8_t* sp = (const uint8_t*)map.pData + (size_t)y * map.RowPitch;
+                        uint8_t* dp = rgb + (size_t)y * td.Width * 3;
+                        for (x = 0; x < (int)td.Width; x++, sp += 4, dp += 3) dp[0] = sp[2], dp[1] = sp[1], dp[2] = sp[0];
+                    }
+                    ok = write_png(path, rgb, (int)td.Width, (int)td.Height);
+                    free(rgb);
+                }
+                ID3D11DeviceContext_Unmap(s_ctx, (ID3D11Resource*)st, 0);
+            }
+            RELEASE(st);
+        }
+        RELEASE(bb);
+    }
+    strncpy(s_shot_result, ok ? path : "", MAX_PATH - 1);
+    s_shot_dir[0] = 0;
+    InterlockedExchange(&s_shot_new, 1);
+    fprintf(stderr, "[present] screenshot %s\n", ok ? path : "failed");
 }
 
 /* After DEVICE_REMOVED / DEVICE_RESET: build everything again on the same window. */
@@ -493,7 +668,8 @@ void present_frame_regions(const uint8_t* pixels, int pitch, int w, int h, const
         ID3D11DeviceContext_Draw(s_ctx, 3, 0);
     }
 
-    hr = IDXGISwapChain_Present(s_sc, 1, 0);
+    if (s_shot_dir[0]) save_screenshot();
+    hr = IDXGISwapChain_Present(s_sc, s_vsync ? 1 : 0, 0);
     if (lost(hr)) recover(hr);
     /* The flip model unbinds the back buffer on Present; it is bound again next frame. */
 }

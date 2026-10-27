@@ -511,11 +511,119 @@ static HRESULT WINAPI dd_RestoreDisplayMode(void* t) { (void)t; return DD_OK; }
  * fetch faults and native32 runs the lift. GetFocus is shimmed in main.c. */
 static WNDPROC g_guest_proc;
 static void ui_step(int dir);           /* layout, below */
+
+/* ---- host hotkeys and the title bar -------------------------------------------------------------
+ * F12 scaling mode, F11 / Alt+Enter borderless fullscreen, F3 FPS readout, F10 / PrintScreen screenshot.
+ * They run on the window's thread (this window procedure). The title bar carries the readouts: a notice
+ * (the mode's name, the screenshot's file) for 2 s after its event, the FPS line while F3 is on; a timer
+ * (WM_TIMER, swallowed here) refreshes it. Borderless fullscreen has no title bar to show them in. */
+#define HOST_TIMER 0x7A51
+static char g_title_base[128], g_title_cur[320], g_notice[200];
+static DWORD g_notice_until;
+static int g_show_fps;
+static char g_shot_dir[MAX_PATH] = "screenshots";   /* main.c sets <game folder>\screenshots: the game changes the working folder */
+void vdd_set_screenshot_dir(const char* dir) { strncpy(g_shot_dir, dir, MAX_PATH - 1); g_shot_dir[MAX_PATH - 1] = 0; }
+static char g_fps_text[96];
+volatile LONG vdd_present_us_max;       /* the longest gap between two presents, microseconds (reset when read) */
+static int g_fullscreen, g_fs_wanted;
+static WINDOWPLACEMENT g_wp;
+static LONG g_wstyle;
+
+static void notice(const char* fmt, const char* a) {
+    _snprintf(g_notice, sizeof g_notice - 1, fmt, a);
+    g_notice[sizeof g_notice - 1] = 0;
+    g_notice_until = GetTickCount() + 2000;
+    fprintf(stderr, "[host] %s\n", g_notice);
+}
+
+static void update_title(void) {
+    static DWORD t0;
+    static LONG p0, f0;
+    char buf[sizeof g_title_cur], shot[MAX_PATH];
+    DWORD now = GetTickCount();
+    if (!g_hwnd) return;
+    if (!g_title_base[0]) {
+        GetWindowTextA(g_hwnd, g_title_base, sizeof g_title_base);
+        if (!g_title_base[0]) strcpy(g_title_base, "Armymen II");
+    }
+    if (present_screenshot_result(shot, sizeof shot)) {
+        if (shot[0]) { const char* b = strrchr(shot, '\\'); notice("Screenshot: %s", b ? b + 1 : shot); }
+        else notice("%s", "Screenshot failed");
+    }
+    if (g_show_fps && now - t0 >= 500) {
+        LONG p = vdd_presented, f = vdd_flips, mx = InterlockedExchange(&vdd_present_us_max, 0);
+        double dt = (now - t0) / 1000.0;
+        if (t0 && dt < 5.0)
+            _snprintf(g_fps_text, sizeof g_fps_text - 1, "%.1f fps  %.1f ms (max %.1f)  game %.0f loops/s",
+                      (p - p0) / dt, (p - p0) ? dt * 1000.0 / (p - p0) : 0.0, mx / 1000.0, (f - f0) / dt);
+        t0 = now, p0 = p, f0 = f;
+    }
+    strcpy(buf, g_title_base);
+    if (now < g_notice_until) { strncat(buf, "  -  ", sizeof buf - strlen(buf) - 1); strncat(buf, g_notice, sizeof buf - strlen(buf) - 1); }
+    if (g_show_fps) { strncat(buf, "  -  ", sizeof buf - strlen(buf) - 1); strncat(buf, g_fps_text, sizeof buf - strlen(buf) - 1); }
+    if (strcmp(buf, g_title_cur)) {
+        strcpy(g_title_cur, buf);
+        SetWindowTextA(g_hwnd, buf);
+    }
+}
+
+/* Borderless fullscreen on the monitor the window is on; leaving restores the style and the window rect
+ * (maximised or not). The hires layout follows the client size on its own (hires.c panel_update). */
+static void set_fullscreen(int on) {
+    if (!g_hwnd) { g_fs_wanted = on; return; }
+    if (on == g_fullscreen) return;
+    if (on) {
+        MONITORINFO mi = { sizeof mi };
+        g_wp.length = sizeof g_wp;
+        GetWindowPlacement(g_hwnd, &g_wp);
+        g_wstyle = GetWindowLongA(g_hwnd, GWL_STYLE);
+        if (IsZoomed(g_hwnd)) ShowWindow(g_hwnd, SW_SHOWNORMAL);
+        GetMonitorInfoA(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+        SetWindowLongA(g_hwnd, GWL_STYLE, (LONG)(WS_POPUP | WS_VISIBLE));
+        SetWindowPos(g_hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left,
+                     mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    } else {
+        SetWindowLongA(g_hwnd, GWL_STYLE, g_wstyle);
+        SetWindowPos(g_hwnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        SetWindowPlacement(g_hwnd, &g_wp);
+    }
+    g_fullscreen = on;
+    notice("%s", on ? "Borderless fullscreen" : "Windowed");
+}
+
+int vdd_get_fullscreen(void) { return g_fullscreen || (!g_hwnd && g_fs_wanted); }
+void vdd_set_fullscreen(int on) { set_fullscreen(on); }
+
+/* The host's own keys. Returns 1 when the message is taken. */
+static int host_key(UINT msg, WPARAM wp, LPARAM lp) {
+    int rep = (lp & 0x40000000) != 0;
+    if (msg == WM_KEYUP && wp == VK_SNAPSHOT) { present_request_screenshot(g_shot_dir); return 1; }
+    if (msg != WM_KEYDOWN && msg != WM_SYSKEYDOWN) return 0;
+    if (wp == VK_F12) {
+        if (!rep) notice("Scaling: %s", present_mode_name(present_cycle_mode((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1)));
+        return 1;
+    }
+    if (wp == VK_F11 || (wp == VK_RETURN && msg == WM_SYSKEYDOWN && (lp & (1 << 29)))) {
+        if (!rep) set_fullscreen(!g_fullscreen);
+        return 1;
+    }
+    if (wp == VK_F3) {
+        if (!rep) { g_show_fps = !g_show_fps; if (!g_show_fps) g_fps_text[0] = 0; notice("FPS readout %s", g_show_fps ? "on" : "off"); }
+        return 1;
+    }
+    if (wp == VK_F10) {
+        if (!rep) present_request_screenshot(g_shot_dir);
+        return 1;
+    }
+    return 0;
+}
 static LRESULT CALLBACK keep_active(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (vdd_trace && (msg == WM_ACTIVATEAPP || msg == WM_ACTIVATE || msg == WM_SETFOCUS || msg == WM_KILLFOCUS))
         fprintf(stderr, "[ddraw] window msg 0x%X wp=%lX\n", msg, (unsigned long)wp);
     if (msg == WM_CLOSE || msg == WM_DESTROY || msg == WM_QUIT || (msg == WM_SYSCOMMAND && (wp & 0xFFF0) == SC_CLOSE))
         fprintf(stderr, "[ddraw] window msg 0x%X wp=%lX (closing)\n", msg, (unsigned long)wp);
+    if (msg == WM_TIMER && wp == HOST_TIMER) { update_title(); return 0; }
+    if (host_key(msg, wp, lp)) { update_title(); return 0; }
     if (msg == WM_KEYDOWN && (wp == VK_OEM_PLUS || wp == VK_ADD || wp == VK_OEM_MINUS || wp == VK_SUBTRACT)) {
         int dir = (wp == VK_OEM_PLUS || wp == VK_ADD) ? +1 : -1;
         if (GetKeyState(VK_SHIFT) & 0x8000) ui_step(dir);             /* the HUD's scale */
@@ -529,8 +637,10 @@ static LRESULT CALLBACK keep_active(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 /* The game's window becomes an ordinary resizable window, sized to the largest
  * whole multiple of the mode that fits 90% of the work area. */
 static void make_window(HWND hwnd) {
-    if (!getenv("PLASTIC_NO_SUBCLASS"))   /* test switch */
+    if (!getenv("PLASTIC_NO_SUBCLASS")) {   /* test switch */
         g_guest_proc = (WNDPROC)SetWindowLongPtrA(hwnd, GWLP_WNDPROC, (LONG_PTR)keep_active);
+        SetTimer(hwnd, HOST_TIMER, 250, NULL);
+    }
     if (getenv("PLASTIC_NO_RESTYLE")) return;
     RECT work;
     SystemParametersInfoA(SPI_GETWORKAREA, 0, &work, 0);
@@ -551,6 +661,7 @@ static HRESULT WINAPI dd_SetCooperativeLevel(void* t, HWND hwnd, DWORD flags) {
     if (hwnd && !g_hwnd) {
         g_hwnd = hwnd;
         make_window(hwnd);
+        if (g_fs_wanted) { g_fs_wanted = 0; set_fullscreen(1); }
     }
     return DD_OK;
 }
@@ -619,6 +730,8 @@ static const void* const g_dd2_vtbl[24] = { DD_COMMON(dd2_SetDisplayMode), dd2_G
 #define STRIP_Y 21                      /* height of the top strip */
 
 static volatile LONG g_ui_halves;       /* UI scale x2; 0 = follow the world */
+int  vdd_get_ui_halves(void) { return (int)g_ui_halves; }
+void vdd_set_ui_halves(int h) { InterlockedExchange(&g_ui_halves, h < 0 ? 0 : h); }
 
 static void ui_step(int dir) {
     RECT rc;
@@ -803,6 +916,17 @@ static DWORD WINAPI presenter(LPVOID unused) {
         int n = GetClientRect(g_hwnd, &rc) ? layout(rc.right, rc.bottom, w, h, rg) : 0;
         present_frame_regions(frame, w, w, h, pal, n ? rg : NULL, n);
         InterlockedIncrement(&vdd_presented);
+        {
+            static LARGE_INTEGER freq, lastp;
+            LARGE_INTEGER now;
+            if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+            QueryPerformanceCounter(&now);
+            if (lastp.QuadPart) {
+                LONG us = (LONG)((now.QuadPart - lastp.QuadPart) * 1000000 / freq.QuadPart);
+                if (us > vdd_present_us_max) vdd_present_us_max = us;
+            }
+            lastp = now;
+        }
     }
 }
 

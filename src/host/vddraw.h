@@ -24,6 +24,17 @@ int  vdd_set_logical(int w, int h);
 void vdd_get_logical(int* w, int* h);
 int  vdd_capacity(int* w, int* h);
 
+/* Borderless fullscreen (F11, Alt+Enter): set before the window exists, it is applied when the game makes it. */
+int  vdd_get_fullscreen(void);
+void vdd_set_fullscreen(int on);
+
+/* Where F10 / PrintScreen put their PNGs (default: "screenshots" in the working folder). */
+void vdd_set_screenshot_dir(const char* dir);
+
+/* The HUD scale in half steps (0 = follows the window), for plastic.ini. */
+int  vdd_get_ui_halves(void);
+void vdd_set_ui_halves(int halves);
+
 /* Frames the presenter has shown so far. */
 extern volatile LONG vdd_presented;
 

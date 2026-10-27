@@ -30,6 +30,8 @@
 #include "mouse.h"
 #include "vddraw.h"
 #include "hires.h"
+#include "present.h"
+#include "config.h"
 
 #define AM2_IMAGE_BASE 0x00400000u
 #define AM2_ENTRY      0x004664C0u   /* the PE entry point: MSVC 6's WinMainCRTStartup */
@@ -229,9 +231,64 @@ static DWORD WINAPI movie_status(LPVOID unused) {
     }
 }
 
+/* ---------------------------------------------------------------- plastic.ini */
+
+/* Command-line overrides of the ini (the environment's PLASTIC_* variables override it too). -1: not given. */
+static int g_flag_fullscreen = -1, g_flag_vsync = -1, g_flag_scaling = -1;
+static const char* g_ini_path;
+static int g_no_ini;
+
+static int env_int(const char* name, int* out) {
+    const char* v = getenv(name);
+    if (!v || !*v) return 0;
+    *out = atoi(v);
+    return 1;
+}
+
+/* Start-up: the ini's values go to the pieces that own them; then the environment, then the flags. */
+static void apply_config(void) {
+    int v;
+    if (cfg_has("zoom")) hires_set_zoom(cfg_get_int("zoom", 0));
+    if (cfg_has("ui_scale")) vdd_set_ui_halves(cfg_get_int("ui_scale", 0));
+    if (cfg_has("hires")) hires_set_enabled(cfg_get_int("hires", 1));
+    if (cfg_has("vsync")) present_set_vsync(cfg_get_int("vsync", 1));
+    if (cfg_has("fullscreen")) vdd_set_fullscreen(cfg_get_int("fullscreen", 0));
+    if (cfg_has("scaling")) {
+        const char* s = cfg_get_str("scaling");
+        int m = present_mode_from_name(s);
+        if (m >= 0) present_set_mode(m); else fprintf(stderr, "[config] scaling = %s: unknown, ignored\n", s);
+    }
+    if (env_int("PLASTIC_VSYNC", &v)) present_set_vsync(v);
+    if (env_int("PLASTIC_FULLSCREEN", &v)) vdd_set_fullscreen(v);
+    if (getenv("PLASTIC_SCALING")) {
+        int m = present_mode_from_name(getenv("PLASTIC_SCALING"));
+        if (m >= 0) present_set_mode(m);
+    }
+    if (g_flag_vsync >= 0) present_set_vsync(g_flag_vsync);
+    if (g_flag_fullscreen >= 0) vdd_set_fullscreen(g_flag_fullscreen);
+    if (g_flag_scaling >= 0) present_set_mode(g_flag_scaling);
+    /* (PLASTIC_ZOOM, PLASTIC_HIRES and PLASTIC_UI_HALVES are read where they were always read: hires_init, the layout) */
+    fprintf(stderr, "[config] start: scaling %s, fullscreen %d, vsync %d, zoom %d, ui_scale %d\n",
+            present_mode_name(present_get_mode()), vdd_get_fullscreen(), present_get_vsync(), hires_get_zoom(), vdd_get_ui_halves());
+}
+
+/* The game's exit (ExitProcess): the settings that can change while playing are written back. A run that
+ * is killed (the watchdog, a crash) writes nothing. */
+static void save_config(void) {
+    if (g_cnc_ddraw) return;
+    cfg_set_int("zoom", hires_get_zoom());
+    cfg_set_int("ui_scale", vdd_get_ui_halves());
+    cfg_set_str("scaling", present_mode_name(present_get_mode()));
+    cfg_set_int("fullscreen", vdd_get_fullscreen());
+    cfg_set_int("hires", cfg_get_int("hires", 1));        /* no runtime switch: kept, or written once so it can be found */
+    cfg_set_int("vsync", present_get_vsync());
+    cfg_save();
+}
+
 /* The game's own exit: logged, so a run that ends without a fault says who ended it. */
 static void shim_ExitProcess(void) {
     fprintf(stderr, "\n[exit] ExitProcess(%u) from sub_%08X\n", ARG(0), g_cur_func);
+    save_config();
     native32_dump_icalls(10);
     ExitProcess(ARG(0));
 }
@@ -600,6 +657,7 @@ static DWORD WINAPI run(LPVOID unused) {
     fflush(stdout);
     native32_call_guest(AM2_ENTRY, 0, NULL);
     printf("\nentry returned eax=%08X\n", g_eax);
+    save_config();
     return g_eax;
 }
 
@@ -622,6 +680,15 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--movie-log")) g_movie_log = 1;
         else if (!strcmp(argv[i], "--hires-log")) g_hires_log = 1;
         else if (!strcmp(argv[i], "--multicore")) g_multicore = 1;
+        else if (!strcmp(argv[i], "--ini") && i + 1 < argc) g_ini_path = argv[++i];
+        else if (!strcmp(argv[i], "--no-ini")) g_no_ini = 1;
+        else if (!strcmp(argv[i], "--fullscreen")) g_flag_fullscreen = 1;
+        else if (!strcmp(argv[i], "--windowed")) g_flag_fullscreen = 0;
+        else if (!strcmp(argv[i], "--vsync") && i + 1 < argc) g_flag_vsync = atoi(argv[++i]) != 0;
+        else if (!strcmp(argv[i], "--scaling") && i + 1 < argc) {
+            g_flag_scaling = present_mode_from_name(argv[++i]);
+            if (g_flag_scaling < 0) { fprintf(stderr, "--scaling: sharp, nearest, smooth or scanlines\n"); return 1; }
+        }
         else if (!strcmp(argv[i], "--mouse-log")) mouse_log = 1;
         else if (!strcmp(argv[i], "--raw-mouse")) mouse_raw = 1;
         else if (!strcmp(argv[i], "--dplay-check")) return dplay_check();
@@ -629,7 +696,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--callbacks")) native32_trace_callbacks = 1;
         else {
             fprintf(stderr, "usage: %s [--game DIR] [--watchdog S] [--dry] [--imports] [--no-route] [--route-gdi] "
-                    "[--raw-mouse] [--mouse-log] [--hires-log] [--native-trace] [--callbacks] | --dplay-check\n", argv[0]);
+                    "[--raw-mouse] [--mouse-log] [--hires-log] [--native-trace] [--callbacks]\n"
+                    "       [--ini FILE] [--no-ini] [--fullscreen | --windowed] [--vsync 0|1] [--scaling sharp|nearest|smooth|scanlines] | --dplay-check\n", argv[0]);
             return 1;
         }
     }
@@ -658,6 +726,23 @@ int main(int argc, char** argv) {
      * range reserved and never returns; in that child it returns 1. */
     if (!native32_hold_image(g_guest_exe, AM2_IMAGE_BASE))
         fprintf(stderr, "warning: could not hold 0x%08X from process start\n", AM2_IMAGE_BASE);
+
+    /* plastic.ini: next to the host exe, else in the game folder (this is the process that runs the game) */
+    if (g_no_ini) cfg_disable();
+    else {
+        char exe[MAX_PATH], *sl;
+        GetModuleFileNameA(NULL, exe, MAX_PATH);
+        sl = strrchr(exe, '\\');
+        if (sl) *sl = 0;
+        cfg_load(exe, g_game_dir, g_ini_path);
+    }
+    if (!g_cnc_ddraw) apply_config();
+    {
+        char sd[MAX_PATH];
+        _snprintf(sd, sizeof sd - 1, "%s\\screenshots", g_game_dir);
+        sd[sizeof sd - 1] = 0;
+        vdd_set_screenshot_dir(sd);
+    }
 
     HANDLE t = CreateThread(NULL, RUN_STACK, run, NULL, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
     if (!t) {

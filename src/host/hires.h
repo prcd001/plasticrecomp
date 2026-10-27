@@ -13,6 +13,11 @@ hires_fn hires_lookup(uint32_t va);
 /* Start-up: reads PLASTIC_HIRES (0 turns the feature off, 1 on; unset = the built-in default) and
  * PLASTIC_ZOOM (first zoom index, 0..4), starts the --hires-log thread when log != 0. */
 void hires_init(int log);
+/* Before hires_init: the settings from plastic.ini (PLASTIC_HIRES / PLASTIC_ZOOM still override them). */
+void hires_set_enabled(int on);
+void hires_set_zoom(int index);
+/* The zoom index now in force (0..4), for plastic.ini. */
+int  hires_get_zoom(void);
 /* The feature off for the whole run (e.g. with --cnc-ddraw, which has no virtual surfaces). */
 void hires_disable(void);
 
