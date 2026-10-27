@@ -41,6 +41,7 @@
 #define ARG(n) MEM32(g_esp + 4 + 4 * (n))
 
 int vdd_trace;                          /* --dd-trace */
+static int g_flip_sleep;                /* PLASTIC_FLIP_SLEEP=ms: the game thread sleeps this long after each Flip (test switch) */
 volatile LONG vdd_flips, vdd_flip_us_sum, vdd_flip_us_max;   /* Flips, and their intervals (hires.c logs them) */
 
 /* ------------------------------------------------------------------ objects */
@@ -260,6 +261,7 @@ static HRESULT WINAPI sf_Flip(surf_t* s, surf_t* target, DWORD flags) {
         }
         last = now;
     }
+    if (g_flip_sleep > 0) Sleep((DWORD)g_flip_sleep);
     return DD_OK;
 }
 
@@ -747,6 +749,16 @@ static void dump_load_frame(const uint8_t* frame, int w, int h, const PALETTEENT
 static DWORD WINAPI presenter(LPVOID unused) {
     (void)unused;
     while (!g_hwnd) Sleep(5);
+    /* The game's loop is unthrottled (thousands of Flips a second) and shares one core with this thread
+     * (main.c): at equal priority the presenter woke up late and showed ~30 fps. A slightly higher
+     * priority lets it preempt the game when its frame is due; it sleeps in vsync the rest of the time.
+     * PLASTIC_PRESENTER_PRIO=0 keeps the old behaviour (test switch). */
+    {
+        const char* pp = getenv("PLASTIC_PRESENTER_PRIO");
+        if (!pp || *pp != '0') SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+        const char* fs = getenv("PLASTIC_FLIP_SLEEP");
+        if (fs && *fs) g_flip_sleep = atoi(fs);
+    }
     if (getenv("PLASTIC_NO_PRESENT")) {   /* test switch: no Direct3D at all */
         for (;;) { Sleep(16); InterlockedIncrement(&vdd_presented); }
     }

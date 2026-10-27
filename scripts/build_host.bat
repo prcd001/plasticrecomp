@@ -13,9 +13,13 @@ set DEFS=/D_CRT_SECURE_NO_WARNINGS
 
 rem The default pipeline's recomp_*.c files do not include recomp_funcs.h: /FI puts the
 rem prototypes in every file, or calls across files become implicit int declarations.
+rem HOST_ONLY=1 skips the lifted C (its objects in build\obj are reused): for host-layer edits.
+if "%HOST_ONLY%"=="1" echo [host only] > build\build.log
+if "%HOST_ONLY%"=="1" goto host
 echo [lifted C %GEN_OPT%] > build\build.log
 cl /nologo /c %GEN_OPT% /bigobj /MP /w /MT %DEFS% /FIrecomp_funcs.h %INC% /Fobuild\obj\ ^
    src\recomp\gen\recomp_*.c >> build\build.log 2>&1 || goto fail
+:host
 echo [runtime + host] >> build\build.log
 cl /nologo /c /O2 /W3 /MT %DEFS% %INC% /Fobuild\obj\ ^
    %RT%\native32\native32.c %RT%\recomp32\image_loader.c %RT%\recomp32\recomp_trace.c ^

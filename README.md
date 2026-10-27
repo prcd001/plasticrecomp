@@ -108,6 +108,10 @@ Test switches (environment variables, for diagnosis only):
 - `PLASTIC_NO_PRESENT=1`, `PLASTIC_NO_SUBCLASS=1`, `PLASTIC_NO_RESTYLE=1`, `PLASTIC_NO_DPI=1`:
   switch one piece of the virtual path off.
 - `PLASTIC_PRESENT_WARP=1`, `PLASTIC_PRESENT_BLT=1`: presenter fallbacks.
+- `PLASTIC_PRESENTER_PRIO=0`: the presenter thread keeps normal priority (default: one step above, so it preempts the
+  game on their shared core and holds 60 fps while the game loop spins at ~2900 Flips/s; with normal priority it fell to ~30 fps
+  while the camera scrolled). `PLASTIC_FLIP_SLEEP=ms`: the game thread sleeps that long after each Flip (a throttle; off).
+- `HOST_ONLY=1 cmd /c scriptsuild_host.bat`: rebuild only the host files, reusing the lifted C's objects.
 - `PLASTIC_LOGICAL_PROBE=WxH`: once the game has made its world surface, set the primary, back buffer and
   world surface's logical size to W x H (within the capacity), to check that menus, movies and the HUD
   still show the 640x480 picture.
