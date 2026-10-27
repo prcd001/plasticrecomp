@@ -16,7 +16,7 @@ original 1999 code, lifted to C, runs natively, as a normal program on 64-bit Wi
 Tested with three editions of the game: the original English retail CD, the Russian edition (GSC, WebColl) and the GOG
 release. Multiplayer is only in the disc builds (see "Multiplayer"); GOG and Steam have none.
 
-Status: the project is a work in progress and has had little play testing. What was measured: `NOTES.md`. The resolution plan: `docs/R_hires.md`.
+Status: version 1.0. Menus, missions and, on the disc builds, LAN games work on the tested editions. Not yet checked: real 4K displays, very small maps, every mission dialog. What was measured: `NOTES.md`. The resolution plan: `docs/R_hires.md`.
 
 ## Rules
 
