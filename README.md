@@ -36,6 +36,7 @@ Where the work stands: `docs/HANDOFF.md`. What was measured: `NOTES.md`. The res
 | `src/host/main.c` | the host: maps the guest at 0x00400000 and runs it on pcrecomp's native32; import shims, options, diagnostics | yes |
 | `src/host/vddraw.c` | the virtual DirectDraw (COM objects, DIB-section surfaces), the window, the presenter thread and the HUD/battlefield layout | yes |
 | `src/host/present.c` | the D3D11 presenter: palette lookup in the shader, nearest/sharp-bilinear, regions at different scales | yes |
+| `src/host/hires.c` | host wrappers that run in front of lifted functions (map load, HUD create, panel update), for step 4; pass-through for now | yes |
 | `src/host/mouse.c` | the game's DirectInput mouse, fed from the Windows cursor | yes |
 | `scripts/` | lift (`run_lift.py`), setup for disc/GOG/Steam owners (`setup.ps1`), host build, presenter test, run, screenshot, key and hashing tools, the unattended Boot Camp run (`auto_bootcamp.ps1`, `compare_shots.py`) | yes |
 | `docs/` | `HANDOFF.md`, `R_hires.md` (resolution research and plan), `PROVENANCE.md` (the disc copies) | yes |
@@ -65,6 +66,8 @@ cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > 
 - **`scripts/run_lift.py`** is pcrecomp's default pipeline plus the jump-table arms it misses. Plain
   `python -m tools` output crashes in memmove. It also records which exe it lifted
   (`recomp_target.h`), and the host refuses to run any other.
+  It also renames the lifted definitions of the functions the host wraps (`WRAP` in the script) to `sub_X_lifted`
+  and writes `recomp_wrap.h` (their split entries), which `src/host/hires.c` uses: re-lift after pulling.
 
 ## In the game
 
