@@ -40,6 +40,10 @@ void hires_disable(void);
 typedef struct { int ww, wh, a, hc, hud_right, capped, dialog; double zoom, eff; } hires_view_t;
 int hires_view(hires_view_t* v);
 
+/* The view's dialog flag, set and cleared by vddraw.c's vdd_dialog_begin / vdd_dialog_end under the presenter's lock (any thread),
+ * so the frame, the key and the flag are one moment for the presenter. */
+void hires_set_dialog_flag(int on);
+
 /* Nonzero from a mission's map load until its first panel update (the loading screen; test dumps). */
 int hires_loading(void);
 /* A mission is being played now (loaded, not in a dialog): the mouse is confined to the window only then. */

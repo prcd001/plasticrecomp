@@ -205,6 +205,12 @@ int  hires_get_zoom_v1(void) {          /* the older builds' index of the neares
     return N_ZOOM_V1 - 1;
 }
 
+void hires_set_dialog_flag(int on) {
+    lock();
+    g_view.dialog = on != 0;
+    unlock();
+}
+
 int hires_view(hires_view_t* v) {
     int act;
     if (!g_cs_ready) return 0;
@@ -337,7 +343,7 @@ static void restore_640(void) {
     g_geo = 0;
     g_dialog = 0;
     g_snap_taken = 0;
-    vdd_dialog_end();
+    vdd_dialog_end(0, 0, 0, 0);         /* the mission is over: the menu redraws the corner itself */
     g_m1 = g_m2 = 0;
     g_applied_zoom = -1;
 }
@@ -487,20 +493,21 @@ static int dialog_substate(void) {
 }
 
 static void enter_dialog(void) {
-    if (!g_snap_taken) {                /* the cursor's draw did not see this dialog open: the shown frame, cursor in it */
-        vdd_dialog_snapshot(1);
+    if (!g_snap_taken) {                /* no play frame since the last dialog took a snapshot (a quick second ESC) */
+        if (vdd_dialog_snapshot_valid()) {
+            fprintf(stderr, "[hires] dialog backdrop: the last snapshot again (no play frame since)\n");
+        } else {                        /* the first dialog of the mission, before any play frame: the shown frame, cursor in it */
+            vdd_dialog_snapshot(1);
+            fprintf(stderr, "[hires] dialog backdrop: the shown frame (the cursor draw came first)\n");
+        }
         g_snap_taken = 1;
-        fprintf(stderr, "[hires] dialog backdrop: the shown frame (the cursor draw came first)\n");
     }
-    vdd_dialog_begin(MEM32(ADDR_CURSOR_SAVE));
-    g_dlg_sub = MEM32(ADDR_SUBSTATE);
+    g_dialog = 1;                       /* (the view's dialog flag is set inside vdd_dialog_begin, with the key, under the presenter's lock) */
     MEM32(ADDR_SCREEN_W) = 640, MEM32(ADDR_SCREEN_H) = 480;
     set_mem_rect(ADDR_CLIP, 0, 0, 640, 480);
     set_mem_rect(ADDR_BLIT, 0, STRIP_H, 624, 480);
-    g_dialog = 1;
-    lock();
-    g_view.dialog = 1;
-    unlock();
+    vdd_dialog_begin(MEM32(ADDR_CURSOR_SAVE));
+    g_dlg_sub = MEM32(ADDR_SUBSTATE);
     fprintf(stderr, "[hires] dialog (sub-state %u): 640x480 geometry\n", MEM32(ADDR_SUBSTATE));
 }
 
@@ -508,10 +515,7 @@ static void apply_geometry(int cw, int ch, int zi);
 static void leave_dialog(void) {
     g_dialog = 0;
     g_snap_taken = 0;
-    vdd_dialog_end();
-    lock();
-    g_view.dialog = 0;
-    unlock();
+    vdd_dialog_end(1, MEM32(ADDR_CURSOR_SAVE), (int)(int16_t)MEM16(0x0048546Cu), (int)(int16_t)MEM16(0x0048546Eu));
     if (g_applied_zoom >= 0) apply_geometry(g_applied_cw, g_applied_ch, g_applied_zoom);
     fprintf(stderr, "[hires] dialog closed (sub-state %u): view geometry again\n", MEM32(ADDR_SUBSTATE));
 }
@@ -556,7 +560,7 @@ void sub_00412FE0(void) {
          * dialog will be shown over (the frame in which it opens is partial: the units are being redrawn). */
         static DWORD last;
         DWORD now = GetTickCount();
-        if (now - last >= 150 || !g_snap_taken) {
+        if (now - last >= 33 || !g_snap_taken) {
             if (vdd_dialog_snapshot(0)) g_snap_taken = 1;
             last = now;
         }

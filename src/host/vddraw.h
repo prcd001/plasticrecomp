@@ -33,7 +33,10 @@ int  vdd_dialog_snapshot(int from_primary);
 int  vdd_dialog_begin(uint32_t save_under);
 void vdd_dialog_refill(void);
 void vdd_dialog_clear(uint32_t save_under);
-void vdd_dialog_end(void);
+int  vdd_dialog_snapshot_valid(void);   /* a snapshot of the world exists (an earlier play frame's) */
+/* The dialog is over: restore = the mission goes on, so the corner of both pages and the cursor's save-under surface at the pointer
+ * (cx, cy) are put back from the snapshot. The key, the view's dialog flag and a short guard on the next frames change together. */
+void vdd_dialog_end(int restore, uint32_t save_under, int cx, int cy);
 
 /* A line in the title bar for 2 s (and the log), like the scaling mode's name. Any thread. */
 void vdd_notice(const char* text);
