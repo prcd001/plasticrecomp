@@ -257,6 +257,7 @@ static void apply_config(void) {
     if (cfg_has("fullscreen")) vdd_set_fullscreen(cfg_get_int("fullscreen", 0));
     if (cfg_has("confine")) vdd_set_confine(cfg_get_int("confine", 1));
     if (cfg_has("edge_scroll")) vdd_set_edge_scroll(cfg_get_int("edge_scroll", 1));
+    if (cfg_has("game_fps")) vdd_set_game_fps(cfg_get_int("game_fps", 60));
     if (cfg_has("scaling")) {
         const char* s = cfg_get_str("scaling");
         int m = present_mode_from_name(s);
@@ -266,6 +267,7 @@ static void apply_config(void) {
     if (env_int("PLASTIC_FULLSCREEN", &v)) vdd_set_fullscreen(v);
     if (env_int("PLASTIC_CONFINE", &v)) vdd_set_confine(v);
     if (env_int("PLASTIC_EDGE_SCROLL", &v)) vdd_set_edge_scroll(v);
+    if (env_int("PLASTIC_GAME_FPS", &v)) vdd_set_game_fps(v);
     if (getenv("PLASTIC_SCALING")) {
         int m = present_mode_from_name(getenv("PLASTIC_SCALING"));
         if (m >= 0) present_set_mode(m);
@@ -297,6 +299,7 @@ static void save_config(void) {
     cfg_set_int("vsync", present_get_vsync());
     cfg_set_int("confine", vdd_get_confine());
     cfg_set_int("edge_scroll", vdd_get_edge_scroll());
+    cfg_set_int("game_fps", vdd_get_game_fps());
     cfg_save();
 }
 

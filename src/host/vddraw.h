@@ -51,6 +51,9 @@ void vdd_set_fullscreen(int on);
 int  vdd_get_confine(void);
 void vdd_set_confine(int on);
 int  vdd_get_edge_scroll(void);
+/* The game thread's pace in Flips a second (default 60; 0 = unlimited): plastic.ini game_fps, PLASTIC_GAME_FPS. */
+int  vdd_get_game_fps(void);
+void vdd_set_game_fps(int fps);
 void vdd_set_edge_scroll(int on);
 void vdd_release_cursor(void);          /* any thread: ClipCursor(NULL) if the host set a clip */
 

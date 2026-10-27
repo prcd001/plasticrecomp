@@ -144,10 +144,11 @@ hires = 1             # 0: the battlefield stays 640x480 as in the original
 vsync = 1             # 0: Present does not wait for the vertical blank (the 60 fps cap stays)
 confine = 1           # F8: keep the mouse in the window while a mission is played
 edge_scroll = 1       # F9: scroll the map when the mouse is at the window's edge
+game_fps = 60          # the game thread's pace in Flips a second (0 = unlimited: vehicles then cannot drive, see docs/R_step4_plan.md section 14)
 ```
 
 For one run, environment variables override the file (`PLASTIC_ZOOM`, `PLASTIC_UI_HALVES`, `PLASTIC_HIRES`,
-`PLASTIC_SCALING`, `PLASTIC_FULLSCREEN`, `PLASTIC_VSYNC`, `PLASTIC_CONFINE`, `PLASTIC_EDGE_SCROLL`), and command-line flags override both.
+`PLASTIC_SCALING`, `PLASTIC_FULLSCREEN`, `PLASTIC_VSYNC`, `PLASTIC_CONFINE`, `PLASTIC_EDGE_SCROLL`, `PLASTIC_GAME_FPS`), and command-line flags override both.
 
 Test switches (environment variables, for diagnosis only):
 - `PLASTIC_HIRES=0`: the battlefield stays 640x480 as in the original (the old layout; `1` turns the feature on).
@@ -172,6 +173,7 @@ Test switches (environment variables, for diagnosis only):
   as the game drew it, 1:1, to `dir\view_<n>_<w>x<h>.bmp` (a window cannot be bigger than the monitor, so this is how a 4K
   view is looked at). `PLASTIC_LOG_DRAWOBJ=1`: log the first 200 `DrawMapObjects` calls (the region, its recursion level).
   `PLASTIC_NO_DRAWFIX=1`: leave the game's own splitting of a crowded region as it is (see "Limits" in `docs/R_step4_plan.md`).
+- `PLASTIC_OBJDUMP=dir` with `PLASTIC_OBJDUMP_AT="t1,t2"` (host seconds): dumps the game's object table and trig tables to dir; `PLASTIC_OBJTRACE="id,from,to"`: logs one unit's state every 50 ms (section 14).
 - `PLASTIC_DUMP_CORNER=dir`: while a mission dialog is up, its 640x480 picture as the game drew it (the see-through pixels magenta) goes to `dir\corner_<n>.bmp` about every 0.7 s (at most 80). `PLASTIC_BLT_STRETCH=1`: a Blt between rectangles of different sizes stretches again, as DirectDraw does (default: a 1:1 copy of the smaller, see "Pointer smear" in `docs/R_step4_plan.md` section 11).
 - `PLASTIC_SCRIPT="t:x,y[,click];..."`: drives the game's cursor with no real mouse. From the first
   step whose time `t` (seconds since the host process started) has passed, the cursor target is game

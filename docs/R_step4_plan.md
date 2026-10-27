@@ -280,3 +280,25 @@ Classic (default window 1280x960 zoom 1 and 0.5): all four edges and corners, th
 2. Call `ui_add(x, y, w, h, edges)` for every piece that is opaque (not for gaps or see-through regions); `edges` names the window sides it stands on. Nothing else: the insets, the camera's overscroll, the bands and the shifted picture follow from the list. The call must come before the insets are computed (the block after the layout's pieces in `layout_impl`); a layout that makes no calls has zero insets, i.e. the plain full view.
 3. Mouse code that needs to know (edge scrolling over a piece) goes in `cursor_from_client`.
 4. Check with screenshots at the four map edges and corners (scripted minimap clicks `@x,y,click` in PLASTIC_SCRIPT) in every layout, zoom 1, 2 and 0.5, default window and maximised.
+
+
+## 14. The game thread's pace: 60 Hz (2026-10-27) - why vehicles spun in place
+
+### Symptom and cause
+Owner: in Boot Camp a vehicle (jeep, tank, truck) turned but never drove. The game's loop has no clock of its own: the 1999 DirectDraw's `Flip` waited for the vertical blank, so the loop ran at the monitor's rate. The virtual DirectDraw's Flip costs microseconds and the loop spun at about 3100 frames a second (`--hires-log`: 0.3 ms per Flip). The game keeps time in whole milliseconds (`sub_00426CD0` QueryPerformanceCounter, dt in 0x00511E08, dt * 0.001 in 0x00511E10), so at that rate dt is 0 or 1 ms in almost every frame, and the vehicle movement, which turns by whole steps, then never integrates a translation (infantry and the camera cope).
+
+### Evidence (map: Boot Camp; Sarge walks to the jeep, boards it, a destination is clicked; the unit table 0x00514F0C dumped with the host's PLASTIC_OBJDUMP / PLASTIC_OBJTRACE)
+- unlimited (PLASTIC_GAME_FPS=0, 3094 game frames/s): vehicle 1008's position (object +0x30,+0x34) stays 881,2781 for 10 s after the order, its heading (block +0x50) jitters 172 / 180 / 188 around the target direction;
+- 60 fps (default now, 60.0 game frames/s, Flip interval 16.67 ms, max 17.9): the same run goes 881,2781 -> 931,2794 (0.8 s) -> 1051,2826 -> 1079,2831 (arrived, 2 s after the order), heading steady at 180.
+- Not the cause: the virtual DirectDraw, hires (PLASTIC_HIRES=0 and `--cnc-ddraw` behaved the same without pacing), the trig / atan tables the game builds at 0x0042DC30 (read back from guest memory and compared with the code's own formulas: 0 mismatches).
+- An earlier A/B with PLASTIC_FLIP_SLEEP=16 looked negative only because Sarge had not yet reached the jeep in that run (a click on a vehicle sends Sarge to it; he enters it on arrival, about 40 s of walking from the start).
+
+### The pace (vddraw.c `pace_flip`, called from every Flip)
+A steady slot every 1 / game_fps s on the performance counter: a high-resolution waitable timer for all but the last 0.5 ms, a spin for the rest (no Sleep(1) jitter); a missed slot is not caught up (the schedule restarts from now after a hitch), so there is never a burst. Default 60; `game_fps` in plastic.ini, `PLASTIC_GAME_FPS` (0 = unlimited). Menus run their own pace (about 30 loops a second, no Flip wait added there), the intro movies keep their 15 fps, the single-core pin and the presenter's priority are unchanged. PLASTIC_FLIP_SLEEP stays as an extra throttle.
+
+### The camera's drift (owner log): two causes
+1. Part of the drift in the owner's log was the unpaced loop (the follow easing is `speed * dt` with dt 0 or 1 ms).
+2. A bug of mine in the camera wrapper (section 13): the edge scroll's step was taken as `target - eye` instead of `target - the target I left`, so every scroll step added the whole easing gap and the virtual target ran away (the "moved by 0,180 / 0,179 ..." lines that changed by 1 per step). Fixed. Checked: cursor at rest in the middle: the eye stays put for 30 s; the right edge scrolls the eye to the map's end (shift 320, the column's inset) and it stops; the bottom edge likewise; back to the middle, no further movement.
+
+### Test tools added
+`PLASTIC_OBJDUMP=dir`, `PLASTIC_OBJDUMP_AT="t1,t2,.."` (host seconds since the process started): the object table (id, pointer, 0x180 bytes; units 1000..1099 also the two blocks their +0x74 / +0x90 point at) to `dir\objs_<n>.bin`, the trig tables to `trig.txt`, the atan tables to `atan.bin`. `PLASTIC_OBJTRACE="id,from,to"`: that unit's block, every 50 ms, to the log.

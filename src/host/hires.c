@@ -555,9 +555,100 @@ void sub_004143A0(void) {
     if (g_geo) clip_view();          /* not if restore_640 ran inside (via a state request) */
 }
 
+/* PLASTIC_OBJDUMP=dir, PLASTIC_OBJDUMP_AT="t1,t2,..." (diagnosis): at those host seconds, in a mission, the object table (0x00514F0C: {id, pointer, mark} x 0x00514F04)
+ * is written to dir\objs_<n>.bin as records of 8 + 0x180 bytes: id, pointer, then 0x180 bytes of the object. Two dumps compared offline show which
+ * fields of which objects change (a vehicle's heading, position, target) */
+static void objtrace_tick(void) {      /* PLASTIC_OBJTRACE="id,from,to" (host seconds): every 50 ms the unit's second block's +0x40..+0x100 to stderr */
+    static int id = -1; static double from, to; static DWORD last;
+    if (id == -1) { id = 0; const char* e = getenv("PLASTIC_OBJTRACE"); if (e) sscanf(e, "%d,%lf,%lf", &id, &from, &to); }
+    if (!id || (int)MEM32(ADDR_STATE) != STATE_MISSION) return;
+    FILETIME ct, et, kt, ut, nowft;
+    GetProcessTimes(GetCurrentProcess(), &ct, &et, &kt, &ut);
+    GetSystemTimeAsFileTime(&nowft);
+    double since = (double)(((ULONGLONG)nowft.dwHighDateTime << 32 | nowft.dwLowDateTime) - ((ULONGLONG)ct.dwHighDateTime << 32 | ct.dwLowDateTime)) / 1e7;
+    DWORD now = GetTickCount();
+    if (since < from || since > to || now - last < 50) return;
+    last = now;
+    uint32_t tab = MEM32(0x00514F0Cu);
+    int n = (int)MEM32(0x00514F04u);
+    for (int i = 0; i < n && tab; i++) {
+        if ((int)MEM32(tab + 12 * i) != id) continue;
+        uint32_t p = MEM32(tab + 12 * i + 4), q = MEM32(p + 0x74);
+        fprintf(stderr, "[objtrace] %.2f obj+0x30 %d,%d blk:", since, (int)MEM32(p + 0x30), (int)MEM32(p + 0x34));
+        for (int o = 0x40; o < 0x100; o += 4) { uint32_t v = MEM32(q + o); if (v) fprintf(stderr, " %X=%d", o, (int)v); }
+        fprintf(stderr, "\n");
+        break;
+    }
+}
+
+static void objdump_tick(void) {
+    objtrace_tick();
+    static const char* dir = (const char*)1;
+    static double at[16];
+    static int nat, done;
+    if (dir == (const char*)1) {
+        dir = getenv("PLASTIC_OBJDUMP");
+        const char* a = getenv("PLASTIC_OBJDUMP_AT");
+        if (dir && a) for (const char* p = a; *p && nat < 16; ) { at[nat++] = atof(p); while (*p && *p != ',') p++; if (*p) p++; }
+    }
+    if (!dir || done >= nat || (int)MEM32(ADDR_STATE) != STATE_MISSION) return;
+    FILETIME ct, et, kt, ut, nowft;
+    GetProcessTimes(GetCurrentProcess(), &ct, &et, &kt, &ut);
+    GetSystemTimeAsFileTime(&nowft);
+    double since = (double)(((ULONGLONG)nowft.dwHighDateTime << 32 | nowft.dwLowDateTime) - ((ULONGLONG)ct.dwHighDateTime << 32 | ct.dwLowDateTime)) / 1e7;
+    if (since < at[done]) return;
+    char path[MAX_PATH];
+    _snprintf(path, sizeof path - 1, "%s\\objs_%d.bin", dir, done);
+    path[sizeof path - 1] = 0;
+    FILE* f = fopen(path, "wb");
+    done++;
+    if (!f) return;
+    uint32_t tab = MEM32(0x00514F0Cu);
+    int n = (int)MEM32(0x00514F04u);
+    int w = 0;
+    for (int i = 0; i < n && i < 2000 && tab; i++) {
+        uint32_t id = MEM32(tab + 12 * i), p = MEM32(tab + 12 * i + 4);
+        uint8_t rec[8 + 0x180];
+        memset(rec, 0, sizeof rec);
+        memcpy(rec, &id, 4), memcpy(rec + 4, &p, 4);
+        if (p > 0x10000) memcpy(rec + 8, (const void*)ADDR(p), 0x180);
+        fwrite(rec, 1, sizeof rec, f);
+        if (id >= 1000 && id < 1100) {          /* a unit: also the two blocks its +0x74 and +0x90 point at (0x200 bytes each) */
+            for (int k = 0; k < 2; k++) {
+                uint32_t q = p > 0x10000 ? MEM32(p + (k ? 0x90 : 0x74)) : 0;
+                uint8_t blk[8 + 0x200];
+                memset(blk, 0, sizeof blk);
+                memcpy(blk, &id, 4), memcpy(blk + 4, &q, 4);
+                if (q > 0x10000 && q < 0x40000000u && !IsBadReadPtr((const void*)ADDR(q), 0x200)) memcpy(blk + 8, (const void*)ADDR(q), 0x200);
+                fwrite(blk, 1, sizeof blk, f);
+            }
+        }
+        w++;
+    }
+    fclose(f);
+    if (done == 1) {        /* the trig tables the game builds at 0x0042DC30: sin * k at 0x514F7C, cos at 0x515780 (260 floats each) */
+        _snprintf(path, sizeof path - 1, "%s\\trig.txt", dir);
+        FILE* t = fopen(path, "w");
+        if (t) {
+            for (int i = 0; i < 260; i++) {
+                uint32_t a1 = MEM32(0x514F7Cu + 4 * i), a2 = MEM32(0x515780u + 4 * i);
+                float f1, f2;
+                memcpy(&f1, &a1, 4), memcpy(&f2, &a2, 4);
+                fprintf(t, "%d %g %g\n", i, f1, f2);
+            }
+            fclose(t);
+        }
+        _snprintf(path, sizeof path - 1, "%s\\atan.bin", dir);
+        t = fopen(path, "wb");
+        if (t) { fwrite((const void*)ADDR(0x515380u), 1, 0xC80, t); fclose(t); }   /* the two angle-by-ratio tables 0x515380.. and 0x515B84.. */
+    }
+    fprintf(stderr, "[hires] object dump %s: %d objects\n", path, w);
+}
+
 void sub_00412FE0(void) {
     static volatile LONG seen;
     first_hit(&seen, "cursor draw 0x00412FE0");
+    objdump_tick();
     if (g_geo && g_enabled && !g_dialog && (int)MEM32(ADDR_STATE) == STATE_MISSION && MEM32(ADDR_SUBSTATE) == 33) {
         /* Playing: the back buffer here is a whole frame without this frame's cursor. Keep one every 150 ms as the world a
          * dialog will be shown over (the frame in which it opens is partial: the units are being redrawn). */
@@ -617,7 +708,7 @@ void sub_0042B5A0(void) {
         if (!g_cam_have) { vx = tx, vy = ty, lastx = tx, lasty = ty; g_cam_have = 1; }
         if (follow) vx = (int16_t)MEM16(obj + 0x12), vy = (int16_t)MEM16(obj + 0x14);
         else if (MEM32(0x00511E38u)) vx = tx, vy = ty;                               /* the minimap's jump: absolute */
-        else if (tx != lastx || ty != lasty) vx += tx - ex, vy += ty - ey;           /* the edge scroll's step, taken from the eye */
+        else if (tx != lastx || ty != lasty) vx += tx - lastx, vy += ty - lasty;      /* the edge scroll's step (the game moved the target it had left by it) */
         int edx_ = clampi(vx + offx, minx - ins[0] + vw / 2, maxx + ins[2] - vw / 2 - 1);
         int edy_ = clampi(vy + offy, miny - ins[1] + vh / 2, maxy + ins[3] - vh / 2 - 1);
         vx = edx_ - offx, vy = edy_ - offy;                                          /* (the overscroll stops at the display range) */

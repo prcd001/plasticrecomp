@@ -41,6 +41,7 @@
 #define ARG(n) MEM32(g_esp + 4 + 4 * (n))
 
 int vdd_trace;                          /* --dd-trace */
+static volatile LONG g_game_fps = 60;   /* the game thread's pace: Flips a second at most (0 = unlimited); see pace_flip */
 static int g_flip_sleep;                /* PLASTIC_FLIP_SLEEP=ms: the game thread sleeps this long after each Flip (test switch) */
 volatile LONG vdd_flips, vdd_flip_us_sum, vdd_flip_us_max;   /* Flips, and their intervals (hires.c logs them) */
 
@@ -269,6 +270,44 @@ static HRESULT WINAPI sf_BltFast(surf_t* d, DWORD x, DWORD y, surf_t* s, RECT* s
     return DD_OK;
 }
 
+/* The game's loop is not paced by anything of its own: the 1999 DirectDraw's Flip waited for the vertical blank (60 to 100 Hz), so the loop
+ * ran at the monitor's rate. Here a Flip costs microseconds and the loop spun at 3000 frames a second, which the game's time keeping (whole
+ * milliseconds: dt is 0 or 1 ms per frame, 0x00511E08) was never meant for. Each Flip now waits for its slot: a steady period of 1 / game_fps
+ * s on the performance counter, a high-resolution waitable timer for the bulk of the wait and a spin for the last 0.5 ms (no Sleep(1)
+ * jitter), and a missed slot is not caught up (the schedule restarts from now), so a hitch never turns into a burst. The wait is not spent
+ * on the pinned core: the presenter thread runs in it. PLASTIC_GAME_FPS / plastic.ini game_fps override (0 = unlimited). */
+static void pace_flip(void) {
+    static LARGE_INTEGER freq, next;
+    static HANDLE timer;
+    static int timer_tried;
+    LONG fps = g_game_fps;
+    LARGE_INTEGER now;
+    if (fps <= 0) { next.QuadPart = 0; return; }
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    LONGLONG period = freq.QuadPart / fps;
+    QueryPerformanceCounter(&now);
+    if (!next.QuadPart || now.QuadPart - next.QuadPart > 4 * period || next.QuadPart - now.QuadPart > 2 * period) next.QuadPart = now.QuadPart;   /* a hitch, or the rate changed */
+    next.QuadPart += period;
+    LONGLONG left = next.QuadPart - now.QuadPart;
+    if (left > freq.QuadPart / 1000 * 2) {      /* more than 2 ms to go: sleep most of it */
+        if (!timer_tried) {
+            timer_tried = 1;
+            timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+            if (!timer) timer = CreateWaitableTimerW(NULL, FALSE, NULL);
+        }
+        LONGLONG sleep100 = (left - freq.QuadPart / 2000) * 10000000LL / freq.QuadPart;      /* 100 ns units, 0.5 ms short */
+        if (timer && sleep100 > 0) {
+            LARGE_INTEGER due;
+            due.QuadPart = -sleep100;
+            if (SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) WaitForSingleObject(timer, 100);
+        } else Sleep((DWORD)(left * 1000 / freq.QuadPart) - 1);
+    }
+    do QueryPerformanceCounter(&now); while (now.QuadPart < next.QuadPart);
+}
+
+int  vdd_get_game_fps(void) { return (int)g_game_fps; }
+void vdd_set_game_fps(int fps) { InterlockedExchange(&g_game_fps, fps < 0 ? 0 : fps > 1000 ? 1000 : fps); }
+
 /* Flip swaps the two buffers' pixels, as hardware page flipping does: the game's
  * dirty-rect redraw is written for swap semantics. */
 static HRESULT WINAPI sf_Flip(surf_t* s, surf_t* target, DWORD flags) {
@@ -295,6 +334,7 @@ static HRESULT WINAPI sf_Flip(surf_t* s, surf_t* target, DWORD flags) {
         }
         last = now;
     }
+    pace_flip();
     if (g_flip_sleep > 0) Sleep((DWORD)g_flip_sleep);
     return DD_OK;
 }
