@@ -88,6 +88,12 @@ On <https://github.com/prcd001/plasticrecomp> press **Code > Download ZIP** and 
   game and keeps the output in `build\last_run.log`. Options pass through: `Play.bat --fullscreen`.
 - The retail disc build wants the disc (or a mounted image of it) when you pick SINGLE PLAYER or BOOT CAMP.
 
+## Reporting problems
+
+Open an issue on GitHub and say which edition you use (English CD, Russian, GOG or Steam), what you did and what happened. Attach
+`build\last_run.log` (`Play.bat` writes it on every run). Please do not attach game files, the lifted C or screenshots of the game
+(see "Rules").
+
 ## Build and run
 
 From the repository root, in PowerShell:
