@@ -57,7 +57,7 @@ static const char k_hlsl[] =
 "cbuffer params : register(b0) {\n"
 "    float2 origin; float2 inv_scale; int2 size; float prescale; int mode;\n"
 "    int2 src_lo; int2 src_hi;\n"   /* the region's source rect: sampling stays inside it */
-"    float dim; int key;\n"          /* dim: darkening 0..1; key: transparent index, or -1 */
+"    float dim; int key; int fill; int pad;\n"          /* dim: darkening 0..1; key: transparent index, or -1; fill: flat palette index or -1 */
 "};\n"
 "float4 vs(uint id : SV_VertexID) : SV_Position {\n"
 "    float2 p = float2((id << 1) & 2, id & 2);\n"
@@ -103,6 +103,7 @@ static const char k_hlsl[] =
 "}\n"
 "float4 ps(float4 pos : SV_Position) : SV_Target {\n"
 "    float2 t = (pos.xy - origin) * inv_scale + float2(src_lo);\n"
+"    if (fill >= 0) return float4(palette.Load(int3(fill, 0, 0)).rgb * (1.0 - dim), 1);\n"
 "    int2 p0 = clamp(int2(floor(t)), src_lo, src_hi - 1);\n"
 "    int i0 = (int)frame_idx.Load(int3(p0, 0));\n"
 "    if (i0 == key) discard;\n"                                /* transparent: the world behind shows */
@@ -118,11 +119,11 @@ typedef struct {
     int   src_lo[2], src_hi[2];
     float dim;
     int   key;
-    int   pad[2];                /* a constant buffer is a multiple of 16 bytes */
+    int   fill, pad;             /* (with dim and key: one 16-byte row) */
 } params_t;
 
 /* The regions of the last presented frame, for present_window_to_frame. */
-#define MAX_REGIONS 16
+#define MAX_REGIONS 32
 static present_region_t s_regions[MAX_REGIONS];
 static int s_nregions;
 
@@ -704,6 +705,7 @@ void present_frame_regions(const uint8_t* pixels, int pitch, int w, int h, const
         prm.src_hi[1] = g->sy + g->sh;
         prm.dim = g->dim;
         prm.key = g->use_key ? g->key : -1;
+        prm.fill = g->use_fill ? g->fill : -1;
         ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource*)s_cb, 0, NULL, &prm, 0, 0);
         vp.TopLeftX = (float)g->dx;
         vp.TopLeftY = (float)g->dy;

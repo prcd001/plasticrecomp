@@ -72,8 +72,15 @@ static get_state_fn state_prev(LPDIRECTINPUTDEVICEA self) {
     return prev_get_state;
 }
 
+static int keys_scripted(void);
 static HRESULT STDMETHODCALLTYPE hook_get_state(LPDIRECTINPUTDEVICEA self, DWORD cb, LPVOID data) {
     HRESULT hr = state_prev(self)(self, cb, data);
+    if (self == g_kbd && FAILED(hr) && cb == 256 && keys_scripted()) {
+        /* a scripted test run (PLASTIC_KEYS) while the window is not in the foreground (someone is using the PC): the real keyboard is not
+         * acquired and fails, so the scripted keys come over an empty state, as if nothing else were pressed */
+        memset(data, 0, 256);
+        hr = DI_OK;
+    }
     if (self == g_kbd && SUCCEEDED(hr)) inject_keys(data, cb);
     if (self == g_mouse && mouse_log) {
         static LONG n;
@@ -297,6 +304,8 @@ static void swallow_host_keys(BYTE* k) {
     if ((k[0x38] | k[0xB8]) & 0x80) k[0x1C] = k[0x9C] = 0;
     if (hires_zoom_keys_ok()) k[0x0C] = k[0x0D] = k[0x4A] = k[0x4E] = 0;
 }
+
+static int keys_scripted(void) { script_init(); return g_keys_n > 0; }
 
 static void inject_keys(void* data, DWORD cb) {
     script_init();

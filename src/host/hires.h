@@ -39,8 +39,10 @@ void hires_disable(void);
  *   eff       the zoom the window really shows: window / view (below 1 the presenter shrinks the view)
  *   hud_ok    the HUD's widget tree is the one the bottom layout's slices were measured on (single player: a 144x459 panel at
  *             panel_x with the minimap, SARGE, SQUAD and COMMANDS widgets at their known places, the 16x459 edge strip at a-16);
- *             without it the bottom layout is not offered. panel_x is the panel's left edge in the frame (hud_right when open) */
-typedef struct { int ww, wh, a, hc, hud_right, capped, dialog; double zoom, eff; int hud_ok, panel_x; } hires_view_t;
+ *             without it the bottom layout is not offered. panel_x is the panel's left edge in the frame (hud_right when open)
+ *   map_rows  rows of the view (from its top) that lie on the map: wh, or fewer when the camera has run past the map's bottom edge under the
+ *             bottom console (the game draws stale tiles there; the presenter covers them) */
+typedef struct { int ww, wh, a, hc, hud_right, capped, dialog; double zoom, eff; int hud_ok, panel_x; int map_rows; } hires_view_t;
 int hires_view(hires_view_t* v);
 
 /* The view's dialog flag, set and cleared by vddraw.c's vdd_dialog_begin / vdd_dialog_end under the presenter's lock (any thread),

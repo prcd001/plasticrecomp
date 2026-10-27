@@ -30,6 +30,7 @@ typedef struct {
     float dim;               /* 0..1: darkens the region's colours (1 = black) */
     int   map_only;          /* not drawn: it only maps window points to frame pixels, for any point of the window
                               * (clamped into its source rect), as the topmost region of present_window_to_frame */
+    int   use_fill, fill;    /* use_fill: the region is one flat colour, palette entry `fill` (its source rect only says which frame pixel a click on it maps to) */
 } present_region_t;
 
 /* As present_frame, but drawing only the given regions, in order (later ones on top;

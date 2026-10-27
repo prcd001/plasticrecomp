@@ -454,6 +454,7 @@ static void apply_geometry(int cw, int ch, int zi) {
     MEM32(ADDR_REDRAW) = 1;
     lock();
     g_view.ww = ww, g_view.wh = wh, g_view.a = g_a, g_view.hc = g_hc, g_view.hud_right = g_hud_right;
+    g_view.map_rows = wh;
     g_view.capped = c.map_capped;
     g_view.zoom = c.ze;                 /* the zoom the view was made for: the asked one unless the surfaces cap it */
     g_view.eff = c.eff;
@@ -569,6 +570,37 @@ void sub_00412FE0(void) {
     clip_full();
     sub_00412FE0_lifted();
     if (g_geo) clip_view();          /* not if restore_640 ran inside (via a state request) */
+}
+
+/* The camera (0x0042B5A0: clamps the target to [map + view/2, map_end - view/2 - 1] and centres the view on it; the view's size is BLIT_RECT's).
+ * With the bottom console the tallest piece stands over the last rows of the view, so the camera is told a view shorter by those rows:
+ * it then centres on the part above the console, and at the map's bottom edge lets the view run past the map by that much (under the console)
+ * so Sarge, who cannot be below the map, is never behind it. The drawing keeps the full SCREEN_H. */
+void sub_0042B5A0(void) {
+    static volatile LONG seen;
+    first_hit(&seen, "camera 0x0042B5A0");
+    static int g_no_cover = -1;
+    if (g_no_cover < 0) g_no_cover = getenv("PLASTIC_NO_COVER") != NULL;
+    int extra = 0;
+    if (g_enabled && g_geo && !g_dialog && (int)MEM32(ADDR_STATE) == STATE_MISSION && !g_no_cover) extra = vdd_bottom_cover();
+    if (extra > 0 && extra < g_vh / 2) {
+        uint32_t bottom = MEM32(ADDR_BLIT + 12);
+        MEM32(ADDR_BLIT + 12) = bottom - (uint32_t)extra;
+        sub_0042B5A0_lifted();
+        MEM32(ADDR_BLIT + 12) = bottom;
+    } else {
+        sub_0042B5A0_lifted();
+    }
+    if (g_enabled && g_geo && !g_dialog && (int)MEM32(ADDR_STATE) == STATE_MISSION) {
+        /* the view's rows on the map: its origin (0x00514E38, the world y of the view's top) to the map's bottom edge (0x00514E04) */
+        int rows = (int)MEM32(ADDR_MAP_MIN_X + 12) - (int)MEM32(0x00514E38u);
+        if (rows > g_vh || rows < 64) rows = g_vh;
+        lock();
+        int changed = g_view.map_rows != rows;
+        g_view.map_rows = rows;
+        unlock();
+        if (changed && g_log) fprintf(stderr, "[hires] camera: view rows on the map %d of %d (console covers %d)\n", rows, g_vh, extra);
+    }
 }
 
 void sub_00424CA0(void) {

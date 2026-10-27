@@ -60,6 +60,9 @@ int  vdd_get_hud_layout(void);
 void vdd_set_hud_layout(int layout);
 const char* vdd_hud_layout_name(int layout);
 int  vdd_bottom_layout_possible(void);
+/* Game rows at the bottom of the battlefield view that the bottom console's tallest piece covers (0: classic layout, no console, a dialog).
+ * The camera wrapper (hires.c) takes them out of the view height it reports to the game's camera. */
+int  vdd_bottom_cover(void);
 
 /* Where F10 / PrintScreen put their PNGs (default: "screenshots" in the working folder). */
 void vdd_set_screenshot_dir(const char* dir);
