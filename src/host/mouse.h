@@ -6,6 +6,9 @@
 /* Host shim for DIRECTINPUT's DirectInputCreateA (native32_shim_t). */
 void shim_DirectInputCreateA(void);
 
+/* Replace one vtable slot of a COM object, returning what was there (NULL if it is already fn). */
+void* patch_slot(void* obj, int slot, void* fn);
+
 /* --mouse-log: report the device calls the game makes. */
 extern int mouse_log;
 

@@ -51,7 +51,7 @@ enum { SLOT_CREATE_DEVICE = 3, SLOT_GET_STATE = 9, SLOT_GET_DATA = 10, SLOT_SET_
 
 /* Replace one vtable slot, returning what was there. The vtables live in
  * dinput.dll's read-only data and are shared by every object of the class. */
-static void* patch_slot(void* obj, int slot, void* fn) {
+void* patch_slot(void* obj, int slot, void* fn) {
     void** vt = *(void***)obj;
     void* old = vt[slot];
     if (old == fn) return NULL;           /* already ours */

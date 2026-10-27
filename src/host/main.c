@@ -312,6 +312,22 @@ static void shim_ExitProcess(void) {
     ExitProcess(ARG(0));
 }
 
+static void shim_CoCreateInstance(void);   /* with the DirectPlay check, below */
+
+/* PLASTIC_MULTI=1: the game's look for its mutex "ArmyMenMutex" (0x0040B60F) finds none, so a second copy can run
+ * on one PC (a network game against itself on 127.0.0.1; give each copy its own --game folder and --ini). */
+static int g_multi;
+static void shim_OpenMutexA(void) {
+    const char* name = (const char*)(uintptr_t)ARG(2);
+    if (g_multi && name && !strcmp(name, "ArmyMenMutex")) {
+        SetLastError(ERROR_FILE_NOT_FOUND);
+        g_eax = 0;
+    } else {
+        g_eax = (uint32_t)(uintptr_t)OpenMutexA(ARG(0), ARG(1), name);
+    }
+    g_esp += 4 + 3 * 4;
+}
+
 static native32_shim_t g_shims[] = {
     { "ExitProcess", shim_ExitProcess },
     { "GetModuleFileNameA", shim_GetModuleFileNameA },
@@ -323,6 +339,8 @@ static native32_shim_t g_shims[] = {
     { "DirectInputCreateA", shim_DirectInputCreateA },   /* mouse.c */
     { "_SmackDoFrame@4", shim_SmackDoFrame },
     { "_SmackWait@4", shim_SmackWait },
+    { "CoCreateInstance", shim_CoCreateInstance },
+    { "OpenMutexA", shim_OpenMutexA },
     /* the virtual DirectDraw; left out with --cnc-ddraw (they must stay last) */
     { "DirectDrawCreate", shim_DirectDrawCreate },       /* vddraw.c */
     { "GetSystemMetrics", shim_GetSystemMetrics },
@@ -535,11 +553,80 @@ typedef ULONG (STDMETHODCALLTYPE *release_fn)(void* self);
 
 static BOOL CALLBACK dplay_connection(const GUID* sp, void* conn, DWORD size, const dpname_t* name, DWORD flags, void* ctx) {
     (void)conn; (void)flags;
-    printf("  %-44s provider {%08lX-%04X-%04X-...}, %lu-byte address\n",
+    printf("  %-44s provider {%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}, %lu-byte address\n",
            name && name->lpszShortNameA ? name->lpszShortNameA : "(unnamed)",
-           sp->Data1, sp->Data2, sp->Data3, size);
+           sp->Data1, sp->Data2, sp->Data3, sp->Data4[0], sp->Data4[1], sp->Data4[2], sp->Data4[3],
+           sp->Data4[4], sp->Data4[5], sp->Data4[6], sp->Data4[7], size);
     ++*(int*)ctx;
     return TRUE;
+}
+
+/* The game lists the connections by name in its own bitmap font (callback sub_0040E460,
+ * list entry sub_00453A30), which has no glyphs above 0x7F. Windows' provider names are MUI
+ * strings, so a non-English system returns them in its ANSI code page and the list draws them
+ * as smeared lines. A name with high bytes is replaced by the English one, picked by the
+ * provider GUID's first DWORD; an English system's names are ASCII and pass untouched. The
+ * game creates its object through ole32!CoCreateInstance (IAT 0x0046F2A4), so the shim hooks
+ * EnumConnections' slot of the object it gets back, as mouse.c does for DirectInput.
+ * PLASTIC_DPNAMES=0 leaves the names as Windows gives them. */
+#define SLOT_ENUM_CONNECTIONS 35
+static const struct { DWORD id; const char* name; } g_dp_names[] = {
+    { 0x36E95EE0, "Internet TCP/IP Connection For DirectPlay" },
+    { 0x685BC400, "IPX Connection For DirectPlay" },
+    { 0x44EAA760, "Modem Connection For DirectPlay" },
+    { 0x0F1D6860, "Serial Connection For DirectPlay" },
+};
+typedef struct { enum_conn_cb guest; void* guest_ctx; } dp_enum_t;
+static enum_conn_fn g_dp_prev_enum;
+
+static int dp_has_high(const char* s) {
+    for (; s && *s; s++)
+        if ((unsigned char)*s >= 0x80) return 1;
+    return 0;
+}
+
+static BOOL CALLBACK dp_name_fix(const GUID* sp, void* conn, DWORD size, const dpname_t* name, DWORD flags, void* ctx) {
+    dp_enum_t* e = (dp_enum_t*)ctx;
+    dpname_t fixed;
+    if (name && dp_has_high(name->lpszShortNameA)) {
+        for (size_t i = 0; i < sizeof g_dp_names / sizeof g_dp_names[0]; i++) {
+            if (g_dp_names[i].id != sp->Data1) continue;
+            fixed = *name;
+            fixed.lpszShortNameA = (LPSTR)g_dp_names[i].name;
+            if (dp_has_high(name->lpszLongNameA)) fixed.lpszLongNameA = (LPSTR)g_dp_names[i].name;
+            fprintf(stderr, "[dplay] connection name with non-ASCII bytes -> \"%s\"\n", g_dp_names[i].name);
+            name = &fixed;
+            break;
+        }
+    }
+    /* e->guest is a guest address when the game enumerates: the fetch faults and native32 runs the lift */
+    return e->guest(sp, conn, size, name, flags, e->guest_ctx);
+}
+
+static HRESULT STDMETHODCALLTYPE dp_enum_connections(void* self, const GUID* app, enum_conn_cb cb, void* ctx, DWORD flags) {
+    if (!cb) return g_dp_prev_enum(self, app, cb, ctx, flags);
+    dp_enum_t e = { cb, ctx };
+    return g_dp_prev_enum(self, app, dp_name_fix, &e, flags);
+}
+
+static void dp_hook(void* dp) {
+    const char* env = getenv("PLASTIC_DPNAMES");
+    if (env && *env == '0') return;
+    void* old = patch_slot(dp, SLOT_ENUM_CONNECTIONS, (void*)dp_enum_connections);
+    if (old) g_dp_prev_enum = (enum_conn_fn)old;     /* NULL: the vtable is already patched, keep the first */
+}
+
+/* ole32!CoCreateInstance (IAT 0x0046F2A4): the real call, plus the hook on the game's DirectPlay object. */
+static void shim_CoCreateInstance(void) {
+    const GUID* clsid = (const GUID*)(uintptr_t)ARG(0);
+    const GUID* iid = (const GUID*)(uintptr_t)ARG(3);
+    void** ppv = (void**)(uintptr_t)ARG(4);
+    HRESULT hr = CoCreateInstance(clsid, (LPUNKNOWN)(uintptr_t)ARG(1), ARG(2), iid, ppv);
+    if (SUCCEEDED(hr) && ppv && *ppv && !memcmp(clsid, &CLSID_DirectPlay_, sizeof(GUID)) &&
+        !memcmp(iid, &IID_IDirectPlay3A_, sizeof(GUID)))
+        dp_hook(*ppv);
+    g_eax = (uint32_t)hr;
+    g_esp += 4 + 5 * 4;
 }
 
 static int dplay_check(void) {
@@ -552,9 +639,10 @@ static int dplay_check(void) {
                "  Enable-WindowsOptionalFeature -Online -FeatureName DirectPlay -All\n");
         return 1;
     }
+    dp_hook(dp);     /* the check lists what the game would be shown */
     void** vtbl = *(void***)dp;
     int n = 0;
-    hr = ((enum_conn_fn)vtbl[35])(dp, NULL, dplay_connection, &n, DPCONNECTION_DIRECTPLAY);
+    hr = ((enum_conn_fn)vtbl[SLOT_ENUM_CONNECTIONS])(dp, NULL, dplay_connection, &n, DPCONNECTION_DIRECTPLAY);
     printf("EnumConnections: 0x%08lX, %d connection(s)\n", (unsigned long)hr, n);
     ((release_fn)vtbl[2])(dp);
     CoUninitialize();
@@ -763,7 +851,9 @@ int main(int argc, char** argv) {
      * calls ExitProcess(0) (sub_00469331). From outside that looks like a crash
      * in the first movie (2026-10-26), so say it instead. */
     {
-        HANDLE m = OpenMutexA(SYNCHRONIZE, FALSE, "ArmyMenMutex");
+        const char* multi = getenv("PLASTIC_MULTI");
+        g_multi = multi && *multi == '1';
+        HANDLE m = g_multi ? NULL : OpenMutexA(SYNCHRONIZE, FALSE, "ArmyMenMutex");
         if (m) {
             CloseHandle(m);
             const char* msg = "Army Men II is already running (another plasticrecomp, or the original game).\n"

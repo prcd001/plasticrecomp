@@ -1071,6 +1071,19 @@ void vdd_dialog_end(int restore, uint32_t save_under, int cx, int cy) {
                     if (sx >= 0 && sy >= 0 && sx < g_snap_w && sy < g_snap_rows) su->px[(size_t)y * su->pitch + x] = g_snap[(size_t)sy * g_snap_w + sx];
                 }
     }
+    else if (!restore && g_key >= 0 && g_primary) {
+        /* The mission ended from inside a dialog (ABORT MISSION in a network game): the corner still holds the key pixels and
+         * the screens that follow (the lobby, DirectPlay's teardown) may not repaint it for a while. Black, like between menus. */
+        int black = 0, best = 1 << 30;
+        if (g_primary->pal)
+            for (int i = 0; i < 256; i++) {
+                int r = g_primary->pal->e[i].peRed, g = g_primary->pal->e[i].peGreen, b = g_primary->pal->e[i].peBlue, d = r * r + g * g + b * b;
+                if (d < best) best = d, black = i;
+            }
+        fill_surface(g_primary, DLG_W, DLG_H, black);
+        if (g_primary->back) fill_surface(g_primary->back, DLG_W, DLG_H, black);
+        if (g_world) fill_surface(g_world, DLG_W, DLG_H, black);
+    }
     g_key = -1;
     g_dlg_ready = 0;
     if (restore) g_guard_until = GetTickCount() + 500;

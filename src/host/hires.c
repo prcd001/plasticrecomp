@@ -73,6 +73,7 @@
 #define ADDR_BLIT       0x00485320u     /* left, top, right (0x485328), bottom */
 #define ADDR_REDRAW     0x00512460u     /* full redraw */
 #define ADDR_STATE      0x00511DA4u     /* 2 = mission */
+#define ADDR_DEPLOY     0x00511DD4u     /* 1 in a network game's deployment phase (sub_00411000), until START (0x0040AD75) */
 #define ADDR_MAP_MIN_X  0x00514DF8u     /* map bounds: min x, min y, max x, max y */
 #define ADDR_EYE        0x00514E0Cu
 #define STATE_MISSION   2
@@ -98,6 +99,8 @@ static hires_view_t g_view;
 static int g_active;                    /* the hires geometry is in force (M3 has run in this mission) */
 /* game-thread only */
 static int g_m1, g_m2;                  /* the map load / HUD create of this mission ran with hires geometry */
+static int g_deploy_classic;            /* a network game's deployment phase ran as the classic 640x480 screen and the hires geometry
+                                         * has not come back yet (sub_004260C0 brings it back when the phase's flag clears) */
 static int g_map_hires;                 /* this map was loaded with hires geometry: cleared only by the next map load, not by
                                          * restore_640, so a side screen that re-creates the HUD (0x0040ADAC) gets it back */
 static int g_wmax, g_hmax, g_a, g_hc;
@@ -157,11 +160,11 @@ static DWORD WINAPI log_thread(LPVOID unused) {
              mx = InterlockedExchange(&vdd_flip_us_max, 0), lp = g_loops;
         LONG n = fr - last_frames;
         fprintf(stderr, "[hires-log] %s view %dx%d zoom %.2f (shown %.3f) frame %.2f ms (max %.1f; %.1f game frames/s, %ld loops/s) "
-                "presenter %.1f fps eye %d,%d (%08X %08X) state %d/%d/%d\n",
+                "presenter %.1f fps eye %d,%d (%08X %08X) state %d/%d/%d deploy %d\n",
                 act ? "on " : "off", act ? v.ww : 0, act ? v.wh : 0, act ? v.zoom : 0.0, act ? v.eff : 0.0, n ? us / 1000.0 / n : 0.0,
                 mx / 1000.0, n / 2.0, (long)((lp - last_loops) / 2), (pres - last_pres) / 2.0,
                 (int)(int16_t)MEM16(ADDR_EYE), (int)(int16_t)MEM16(ADDR_EYE + 2), MEM32(ADDR_EYE), MEM32(ADDR_EYE + 4),
-                (int)MEM32(ADDR_STATE), (int)MEM32(0x00511DBCu), (int)MEM32(0x00511DC0u));
+                (int)MEM32(ADDR_STATE), (int)MEM32(0x00511DBCu), (int)MEM32(0x00511DC0u), (int)MEM32(ADDR_DEPLOY));
         if (MEM32(ADDR_STATE) == STATE_MISSION)
             fprintf(stderr, "[hires-log] limits: pool A %d (peak %ld, cap 450; evictions %ld calls, %ld dropped) "
                     "pool B %d (peak %ld, cap 90; %ld calls, %ld dropped) seq evict %ld calls, %ld dropped (peak fill %ld) "
@@ -400,6 +403,7 @@ void sub_0042C440(void) {
     lim_reset();
     InterlockedIncrement(&g_mission_serial);
     g_map_hires = 0;
+    g_deploy_classic = 0;
     if (g_enabled) {
         int cw, ch;
         vdd_capacity(&cw, &ch);
@@ -421,6 +425,19 @@ void sub_0042C440(void) {
 void sub_00413480(void) {
     static volatile LONG seen;
     first_hit(&seen, "HUD create 0x00413480");
+    fprintf(stderr, "[hires] HUD create entry: from sub_%08X, deploy %d, hires map %d, geo %d\n", g_cur_func,
+            (int)MEM32(ADDR_DEPLOY), g_map_hires, g_geo);
+    if (g_enabled && MEM32(ADDR_DEPLOY)) {
+        /* The deployment panel is wider than the HUD column, slides with the screen's width and is drawn at 640x480 coordinates:
+         * the phase runs as the classic screen. START clears the flag and re-creates the HUD (0x0040ADAC), which takes the branch
+         * below (M1 again, M2) and the hires geometry comes back. */
+        restore_640();
+        g_deploy_classic = 1;
+        fprintf(stderr, "[hires] deploy phase (0x%08X = 1): classic 640x480 until the phase ends\n", ADDR_DEPLOY);
+        sub_00413480_lifted();
+        return;
+    }
+    g_deploy_classic = 0;               /* the game re-creates the HUD itself: nothing left for the poll in sub_004260C0 */
     if (g_enabled && !g_m1 && g_map_hires && enter_map_geometry())      /* a side screen's return: this map's geometry again */
         fprintf(stderr, "[hires] M1 again for a HUD re-create: SCREEN %dx%d, state %d\n", g_a, g_hc, (int)MEM32(ADDR_STATE));
     if (g_enabled && g_m1) {
@@ -537,6 +554,19 @@ static void dialog_check(void) {
 void sub_004260C0(void) {
     static volatile LONG seen;
     first_hit(&seen, "state-2 frame 0x004260C0");
+    if (g_enabled && g_deploy_classic && !MEM32(ADDR_DEPLOY) && (int)MEM32(ADDR_STATE) == STATE_MISSION && g_map_hires && !g_m1) {
+        /* A network game's deployment phase is over (0x00511DD4 cleared; the game does not re-create the HUD itself, the panel
+         * update just reads the flag): do what a re-create does, from here, at the start of a frame. The HUD create wrapper
+         * brings the map's geometry back (M1 again, M2); the next panel update applies M3. The call is the game's own
+         * (push the dummy return address, call); the registers are put back, as this wrapper's caller expects them. */
+        const uint32_t s_eax = g_eax, s_ecx = g_ecx, s_edx = g_edx, s_ebx = g_ebx, s_esi = g_esi, s_edi = g_edi, s_ebp = g_ebp, s_esp = g_esp;
+        g_deploy_classic = 0;
+        fprintf(stderr, "[hires] deploy over (0x%08X = 0, no HUD re-create by the game, from sub_%08X): re-creating the HUD\n", ADDR_DEPLOY, g_cur_func);
+        g_esp -= 4;
+        MEM32(g_esp) = RECOMP_RETADDR;
+        sub_00413480();
+        g_eax = s_eax, g_ecx = s_ecx, g_edx = s_edx, g_ebx = s_ebx, g_esi = s_esi, g_edi = s_edi, g_ebp = s_ebp, g_esp = s_esp;
+    }
     if (g_enabled && g_geo) dialog_check();     /* before the dispatch builds the screen */
     if (g_enabled && g_geo && g_dialog) {
         vdd_dialog_refill();
@@ -750,6 +780,7 @@ void sub_00424CA0(void) {
 void sub_00424AD0(void) {
     static volatile LONG seen;
     first_hit(&seen, "state request 0x00424AD0");
+    if ((int)MEM32(g_esp + 4) != STATE_MISSION) g_deploy_classic = 0;
     if (g_geo || g_m1) {
         int want = (int)MEM32(g_esp + 4);
         if (want != STATE_MISSION) {
