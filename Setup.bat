@@ -1,7 +1,8 @@
 @echo off
 rem Setup.bat - one-time setup: copies your own Army Men II files, lifts them and builds the host.
-rem Needs your own copy of the game (retail disc, GOG or Steam install), Git, Python 3, PowerShell 7 (pwsh)
-rem and the Visual Studio 2022 Build Tools (see README.md). Fetches pcrecomp, cnc-ddraw and a .venv itself.
+rem Needs your own copy of the game (retail disc, GOG or Steam install) and Python 3 (see README.md).
+rem Fetches pcrecomp, cnc-ddraw and a .venv itself, and offers to install the Visual Studio 2022 Build Tools
+rem (the C++ compiler) when they are missing.
 setlocal
 cd /d "%~dp0"
 
@@ -12,16 +13,12 @@ rem Typed quotes are dropped; a trailing backslash (E:\) would escape the closin
 if defined FROM set "FROM=%FROM:"=%"
 if defined FROM if "%FROM:~-1%"=="\" set "FROM=%FROM%."
 
-where pwsh >nul 2>nul
-if errorlevel 1 (
-  echo PowerShell 7 ^(pwsh^) is needed. Get it from https://aka.ms/powershell
-  pause
-  exit /b 1
-)
+rem Windows PowerShell 5.1, which every Windows 10 and 11 has (no PowerShell 7 needed)
+set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if "%FROM%"=="" (
-  pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\setup.ps1
+  "%PS%" -NoProfile -ExecutionPolicy Bypass -File scripts\setup.ps1
 ) else (
-  pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\setup.ps1 -From "%FROM%"
+  "%PS%" -NoProfile -ExecutionPolicy Bypass -File scripts\setup.ps1 -From "%FROM%"
 )
 if errorlevel 1 (
   echo.

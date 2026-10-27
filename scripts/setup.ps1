@@ -2,13 +2,15 @@
 setup.ps1 - from "I own Army Men II" to a built plasticrecomp host, in one command.
 
   pwsh scripts\setup.ps1 [-From <game folder>] [-GameDir <dir>] [-GenDir <dir>] [-NoBuild]
-                         [-NoLift] [-NoFetch] [-Force] [-Report <json>]
+                         [-NoLift] [-NoFetch] [-Yes] [-Force] [-Report <json>]
 
   0. First run: fetches what the repository does not hold, before anything is copied: pcrecomp
-     (git clone at the commit pinned in NOTES.md), the cnc-ddraw v7.1.0.0 zip from its GitHub
-     release (SHA-256 checked) and a .venv with capstone and pefile. Needs git, Python 3 and
-     the Visual Studio 2022 Build Tools (C++ x86); a missing one is named. -NoFetch downloads
-     nothing and stops at the first missing piece instead.
+     (GitHub's zip of the commit pinned in NOTES.md), the cnc-ddraw v7.1.0.0 zip from its GitHub
+     release (SHA-256 checked) and a .venv with capstone and pefile. Needs Python 3 and
+     the Visual Studio 2022 Build Tools (C++ x86). A missing Python is named; missing
+     Build Tools are installed on a yes (Microsoft's installer, signature checked, about 3 GB,
+     administrator approval; -Yes answers for you). -NoFetch downloads and installs nothing and
+     stops at the first missing piece instead.
   1. Finds the game: -From (the folder holding ArmyMen2.exe: the retail disc, a copy of its
      files, or an install), else, read only, the GOG install in the registry (game id
      1913968552) and the Steam install (app 549170, via Steam's libraryfolders.vdf and
@@ -41,6 +43,7 @@ param(
     [switch]$NoBuild,
     [switch]$NoLift,
     [switch]$NoFetch,
+    [switch]$Yes,
     [switch]$Force
 )
 if ($NoLift) { $NoBuild = $true }
@@ -73,8 +76,8 @@ $Builds = @{
 
 # The third-party pieces (not in this repository) and the tools this needs, fetched or checked
 # before anything is copied. The pins are the ones in NOTES.md.
-$PcrecompUrl = 'https://github.com/sp00nznet/pcrecomp'
 $PcrecompCommit = '54cb21f7110776af390bd7260a297ffcaa2a0b01'
+$PcrecompZipUrl = "https://github.com/sp00nznet/pcrecomp/archive/$PcrecompCommit.zip"   # the commit's tree: no git needed
 $CncZipUrl = 'https://github.com/FunkyFr3sh/cnc-ddraw/releases/download/v7.1.0.0/cnc-ddraw.zip'
 $CncZipSha = '0b13ab89a64c9918189b1dadd449ef6ed3cb3b7b19cabd96d8adbd95505bb908'
 $CncDllSha = '85e0f7d530dfda134793a57cb3e76b0287dcc96892ee57162dd68f47283b03a9'
@@ -85,21 +88,39 @@ function Sha256([string]$p) { (Get-FileHash -LiteralPath $p -Algorithm SHA256).H
 function Missing([string]$what, [string]$how) {
     if ($NoFetch) { Fail "missing ${what}: $how" }
 }
-function Exe([string]$cmd, [string[]]$a) {   # run a tool, stop on a non-zero exit
+function Exe([string]$cmd, [string[]]$a) {   # run a tool, stop on a non-zero exit (stderr text alone is no error)
+    $ErrorActionPreference = 'Continue'
     & $cmd @a
     if ($LASTEXITCODE -ne 0) { Fail "'$cmd $($a -join ' ')' failed (exit $LASTEXITCODE)" }
+}
+function Quiet([string]$cmd, [string[]]$a) {   # run a tool, no output, return its exit code
+    $ErrorActionPreference = 'Continue'
+    & $cmd @a *> $null
+    $LASTEXITCODE
+}
+function Download([string]$url, [string]$to) {   # Windows PowerShell 5.1 needs TLS 1.2 asked for, and its progress bar is very slow
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $to
 }
 
 # pcrecomp, the lifter and the 32-bit runtime, at the pinned commit.
 if (-not (Test-Path -LiteralPath (Join-Path $Pcrecomp 'tools') -PathType Container)) {
-    Missing 'third_party\pcrecomp' "clone $PcrecompUrl and check out $PcrecompCommit"
+    Missing 'third_party\pcrecomp' "download $PcrecompZipUrl and unpack its folder as third_party\pcrecomp"
     if ((Test-Path -LiteralPath $Pcrecomp) -and (Get-ChildItem -LiteralPath $Pcrecomp -Force | Select-Object -First 1)) {
         Fail "'$Pcrecomp' exists, is not empty and is not pcrecomp: remove it or fix it by hand"
     }
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Fail 'git is needed to fetch pcrecomp: https://git-scm.com/download/win' }
-    Write-Host "setup: fetching pcrecomp $PcrecompCommit from $PcrecompUrl"
-    Exe git @('clone', '--quiet', $PcrecompUrl, $Pcrecomp)
-    Exe git @('-C', $Pcrecomp, 'checkout', '--quiet', $PcrecompCommit)
+    Write-Host "setup: downloading pcrecomp $PcrecompCommit from $PcrecompZipUrl"
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) "plasticrecomp_pcrecomp_$PID"
+    New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+    Download $PcrecompZipUrl "$tmp\pcrecomp.zip"
+    Expand-Archive -LiteralPath "$tmp\pcrecomp.zip" -DestinationPath "$tmp\x" -Force
+    $top = @(Get-ChildItem -LiteralPath "$tmp\x" -Directory)
+    if ($top.Count -ne 1 -or -not (Test-Path -LiteralPath (Join-Path $top[0].FullName 'tools') -PathType Container)) { Fail "$PcrecompZipUrl did not hold pcrecomp (no tools folder)" }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Pcrecomp) | Out-Null
+    if (Test-Path -LiteralPath $Pcrecomp) { Remove-Item -LiteralPath $Pcrecomp -Force }
+    Move-Item -LiteralPath $top[0].FullName -Destination $Pcrecomp
+    Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # cnc-ddraw v7.1.0.0: the zip (checked by its SHA-256) unpacked beside it.
@@ -108,7 +129,7 @@ if (-not ((Test-Path -LiteralPath "$CncDir\ddraw.dll" -PathType Leaf) -and (Test
     if (-not (Test-Path -LiteralPath $CncZip -PathType Leaf)) {
         Write-Host "setup: downloading $CncZipUrl"
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $CncZip) | Out-Null
-        Invoke-WebRequest -UseBasicParsing -Uri $CncZipUrl -OutFile $CncZip
+        Download $CncZipUrl $CncZip
     }
     if ((Sha256 $CncZip) -ne $CncZipSha) { Fail "$CncZip is not cnc-ddraw v7.1.0.0 (SHA-256 differs from the one in NOTES.md); delete it and run again" }
     Expand-Archive -LiteralPath $CncZip -DestinationPath $CncDir -Force
@@ -122,32 +143,68 @@ if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
     if ((Test-Path -LiteralPath $venv) -and (Get-ChildItem -LiteralPath $venv -Force | Select-Object -First 1)) { Fail "'$venv' exists but has no Scripts\python.exe: delete it and run again" }
     Write-Host 'setup: creating .venv (capstone, pefile)'
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        & py -3.11 -m venv $venv 2>$null
-        if ($LASTEXITCODE -ne 0) { & py -3 -m venv $venv }
+        if ((Quiet py @('-3.11', '-m', 'venv', $venv)) -ne 0) { Exe py @('-3', '-m', 'venv', $venv) }
     } elseif (Get-Command python -ErrorAction SilentlyContinue) {
-        & python -m venv $venv
+        Exe python @('-m', 'venv', $venv)
     } else {
         Fail 'Python 3 is needed (3.11 is the tested one): https://www.python.org/downloads/ (tick "Add python.exe to PATH") and run again'
     }
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $Python -PathType Leaf)) { Fail 'could not create the .venv' }
+    if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) { Fail 'could not create the .venv' }
     Exe $Python @('-m', 'pip', 'install', '--quiet', '--disable-pip-version-check', 'capstone==5.0.9', 'pefile==2024.8.26')
 }
 
 # The C compiler build_host.bat uses: Visual Studio 2022 Build Tools with the C++ x86 tools.
-if (-not $NoBuild) {
-    $vc = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars32.bat'
-    if (-not (Test-Path -LiteralPath $vc -PathType Leaf) -and -not $env:VCVARS32) {
-        $vsw = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-        $inst = if (Test-Path -LiteralPath $vsw) { & $vsw -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath }
-        $found = if ($inst) { Join-Path @($inst)[0] 'VC\Auxiliary\Build\vcvars32.bat' }
-        if ($found -and (Test-Path -LiteralPath $found -PathType Leaf)) { $env:VCVARS32 = $found }
-        else { Fail 'no C++ compiler: install "Build Tools for Visual Studio 2022" with the "Desktop development with C++" workload (https://aka.ms/vs/17/release/vs_BuildTools.exe), then run again' }
+$DefaultVcvars = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars32.bat'
+function Find-Vcvars {   # a vcvars32.bat of an install with the C++ x86 tools, or ''
+    if ($env:VCVARS32 -and (Test-Path -LiteralPath $env:VCVARS32 -PathType Leaf)) { return $env:VCVARS32 }
+    if (Test-Path -LiteralPath $DefaultVcvars -PathType Leaf) { return $DefaultVcvars }
+    $vsw = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (Test-Path -LiteralPath $vsw) {
+        $inst = & $vsw -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        if ($inst) {
+            $f = Join-Path @($inst)[0] 'VC\Auxiliary\Build\vcvars32.bat'
+            if (Test-Path -LiteralPath $f -PathType Leaf) { return $f }
+        }
     }
+    ''
 }
-if (-not $NoBuild -and $GenDir -ne $DefaultGen) { Fail "build_host.bat builds $DefaultGen only: drop -GenDir, or add -NoBuild" }
-if ((Test-Path -LiteralPath $GenDir) -and (Get-ChildItem -LiteralPath $GenDir -Force | Select-Object -First 1) -and
-    -not (Test-Path -LiteralPath (Join-Path $GenDir 'recomp_funcs.h'))) {
-    Fail "'$GenDir' is not empty and is not lifter output (no recomp_funcs.h): refusing to clear it"
+# Microsoft's own bootstrapper (aka.ms/vs/17/release), run only after its signature is checked.
+function Install-BuildTools {
+    $url = 'https://aka.ms/vs/17/release/vs_BuildTools.exe'
+    $by_hand = "install it from $url (workload ""Desktop development with C++"") and run setup again"
+    Write-Host 'setup: the C++ compiler (Build Tools for Visual Studio 2022) is not installed.'
+    Write-Host '       Setup can install it from Microsoft now: about 3 GB, Windows asks for administrator approval,'
+    Write-Host '       10 to 30 minutes. It is the one tool this project cannot build without.'
+    if (-not $Yes) {
+        $a = Read-Host '       Install it now? [Y/n]'
+        if ($a -and $a -notmatch '^y(es)?$') { Fail "the compiler is needed to build the host: $by_hand" }
+    }
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) 'vs_BuildTools.exe'
+    Write-Host "setup: downloading $url"
+    Download $url $tmp
+    $sig = Get-AuthenticodeSignature -LiteralPath $tmp
+    if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+        Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
+        Fail "$url did not give a Microsoft-signed installer, so it was not run: $by_hand"
+    }
+    Write-Host 'setup: installing (the installer shows its progress; accept the administrator prompt)'
+    try {
+        $p = Start-Process -FilePath $tmp -Verb RunAs -Wait -PassThru `
+            -ArgumentList '--passive', '--wait', '--norestart', '--add', 'Microsoft.VisualStudio.Workload.VCTools', '--includeRecommended'
+    } catch { Fail "the installer did not start (administrator prompt declined?): $by_hand" }
+    Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
+    if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) { Fail "the Build Tools installer ended with exit code $($p.ExitCode): $by_hand" }
+    if ($p.ExitCode -eq 3010) { Write-Host 'setup: Windows asks for a restart to finish the install; if the build fails, restart and run setup again' }
+}
+if (-not $NoBuild) {
+    $vc = Find-Vcvars
+    if (-not $vc) {
+        if ($NoFetch) { Fail 'no C++ compiler: install "Build Tools for Visual Studio 2022" with the "Desktop development with C++" workload (https://aka.ms/vs/17/release/vs_BuildTools.exe), then run again' }
+        Install-BuildTools
+        $vc = Find-Vcvars
+        if (-not $vc) { Fail 'the Build Tools were installed but vcvars32.bat was not found: restart Windows and run setup again' }
+    }
+    if ($vc -ne $DefaultVcvars) { $env:VCVARS32 = $vc }
 }
 
 # GOG's installer and GOG Galaxy record the install folder as 'path' (also 'workingDir';
