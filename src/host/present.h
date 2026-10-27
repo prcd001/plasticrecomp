@@ -24,7 +24,13 @@ void present_frame(const uint8_t* pixels, int pitch, int w, int h, const PALETTE
 
 /* A piece of the frame drawn at its own place and scale: source rect in frame pixels,
  * destination rect in client pixels. */
-typedef struct { int sx, sy, sw, sh; int dx, dy, dw, dh; } present_region_t;
+typedef struct {
+    int sx, sy, sw, sh; int dx, dy, dw, dh;
+    int   use_key, key;      /* use_key: texels whose index is `key` are not drawn (the region is transparent there) */
+    float dim;               /* 0..1: darkens the region's colours (1 = black) */
+    int   map_only;          /* not drawn: it only maps window points to frame pixels, for any point of the window
+                              * (clamped into its source rect), as the topmost region of present_window_to_frame */
+} present_region_t;
 
 /* As present_frame, but drawing only the given regions, in order (later ones on top;
  * sampling never crosses a region's source rect). NULL/0 regions = the whole frame,

@@ -120,8 +120,9 @@ def table_arms(image, base, func):
 #   0x00424CA0 edge scroll, 0x00424AD0 state change request, 0x004260C0 the state-2 (mission) frame's dispatch,
 #   0x004609D0 / 0x00460CA0 / 0x00460FD0 the row pool A / row pool B / SEQ evictors (counted), 0x0041DCE0 the dirty
 #   list's reset (its fill read), 0x0041E440 DrawMapObjects (the depth list's fill read after it)
+#   0x0044D6D0 the dialogs' "capture the back buffer into the primary" (the host clears the dialog corner after it)
 WRAP = (0x0042C440, 0x00413480, 0x004143A0, 0x00412FE0, 0x00424CA0, 0x00424AD0, 0x004260C0,
-        0x004609D0, 0x00460CA0, 0x00460FD0, 0x0041DCE0, 0x0041E440)
+        0x004609D0, 0x00460CA0, 0x00460FD0, 0x0041DCE0, 0x0041E440, 0x0044D6D0)
 
 
 def wrap_pass(out_dir, wrap=WRAP):

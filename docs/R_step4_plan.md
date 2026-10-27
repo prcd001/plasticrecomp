@@ -220,3 +220,38 @@ Steps are now {0.25, 0.5, 1, 1.5, 2, 3, 4}. What changed and why:
   Edge scrolling stays at the game's 1000 world px/s, i.e. 500 screen px/s at 0.5x and 444 at 0.444x (not changed).
 - **Known**: the game draws its pointer into the battlefield, so it shrinks with the zoom (a few pixels at 0.25x; at 4x it was always big). A cursor
   overlay at constant size would need the presenter to draw the sprite separately (its pixels cannot be told from the map's): not done.
+
+
+## 11. Dialogs over the frozen battlefield, and the pointer smear (2026-10-27)
+
+### What a dialog frame is (read from the Blt log of the ESC menu)
+Dialog geometry is 640x480 (section 9). A screen is built by its builder (7 callers of 0x0044D6D0), which copies the back buffer's corner
+(SCREEN_CLIP, 0,0-640,480) into the primary as the backdrop, then draws the widgets (BltFast of 152x25 plates, text) onto the primary. Every frame
+after that (sub_00425AF0): back <- primary corner, widgets on the back buffer, the cursor's restore / save-under / draw, primary <- back, the cursor restored on
+the back buffer. There is no page flip in dialogs. The frame that opens a dialog still runs the play frame's tail: the world's compose (world surface -> back) at the
+dialog geometry, the HUD's strip and the selected unit's health bar; that is what the backdrop copy captures.
+
+### Layout (vddraw.c layout / presenter, hires.c)
+- The world behind is a snapshot of the back buffer taken from the cursor-draw wrapper in a play frame (sub-state 33), at most every 150 ms, before the cursor is drawn:
+  the frame in which ESC is pressed is partial (the units are being redrawn), so the last complete play frame is used. Fallback: the shown frame.
+- The wrapper of 0x0044D6D0 (WRAP list in run_lift.py: re-lift needed once) clears the 640x480 corner of both pages, the world surface and the cursor's
+  32x32 save-under surface to a key index right after the backdrop copy, i.e. before the widgets. The key is the palette entry nearest magenta (255,0,255 = index
+  255 in this game). So the live corner is key pixels plus exactly what the widgets and the cursor draw. A change of dialog screen (menu -> Controls -> menu)
+  announces itself the same way (the next builder clears again).
+- The presenter's frame buffer gets 480 rows below the logical frame: rows 0..h are the snapshot (copied once per dialog), rows h..h+479 the live corner
+  (copied each frame). Regions: the world and the two HUD pieces from the snapshot exactly as in play; the live corner, 640x480 at the HUD scale `u`, centred
+  in the window, with the key index not drawn (present.c: `use_key`; the key's colour is replaced by the pixel's own, so no pink fringe in a blend); and a map-only
+  region over the same rectangle that maps any window point into the picture (clamped), so the pointer works over the whole window and clicks outside the picture land on its edge.
+  A full-screen sheet (fewer than 2 % key pixels) dims the world and the HUD behind (`dim` 0.55); a small dialog hides the picture's top 21 rows (the HUD's strip, which the
+  snapshot has). The picture shows only once its builder has run (400 ms fallback).
+- Checked by screenshots at zoom 3 and 1 (default window), zoom 2 maximised (2560x1411): HQ box, instruction sheet, ESC menu (Boot Camp and campaign: SAVE / LOAD GAME), Controls,
+  Audio, F1 map, the save dialog, clicks on the buttons through the mapping, return to play.
+- `PLASTIC_DUMP_CORNER=dir` writes the live corner for diagnosis.
+
+### Pointer smear (bug B), root cause
+The cursor draw saves the pixels under the pointer into a 32x32 surface with `Blt(save, rect(0,0,32,32), back, pointer rect)` and restores them with
+`Blt(back, pointer rect, save, rect(0,0,32,32))`; the arrow is 12x16. DirectDraw stretches a Blt with unequal rectangles, so the round trip is lossy (columns shifted by one
+pixel except every third) and the damaged pixels are what the next save-under takes: where the picture under the pointer does not change (a dialog over the frozen world),
+every pass leaves more garbled patches behind. It is the 1999 game's bug (real DirectDraw stretches identically); it is invisible in play because the world is redrawn each frame.
+vddraw.c's Blt now copies the smaller of the two rectangles 1:1 when the sizes differ (the game never stretches on purpose; `PLASTIC_BLT_STRETCH=1` brings the stretch back).
+Reproduction (PLASTIC_HIRES=0, ESC menu, scripted pointer over the hangar texture, screenshot before and after): 3120 pixels differ with the stretch, none with the fix.

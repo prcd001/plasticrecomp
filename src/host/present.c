@@ -57,14 +57,18 @@ static const char k_hlsl[] =
 "cbuffer params : register(b0) {\n"
 "    float2 origin; float2 inv_scale; int2 size; float prescale; int mode;\n"
 "    int2 src_lo; int2 src_hi;\n"   /* the region's source rect: sampling stays inside it */
+"    float dim; int key;\n"          /* dim: darkening 0..1; key: transparent index, or -1 */
 "};\n"
 "float4 vs(uint id : SV_VertexID) : SV_Position {\n"
 "    float2 p = float2((id << 1) & 2, id & 2);\n"
 "    return float4(p * float2(2, -2) + float2(-1, 1), 0, 1);\n"
 "}\n"
+"static float3 centre_colour;\n"           /* the colour of the texel under the pixel: stands for the key's colour in a blend */
 "float3 colour(int2 p) {\n"
 "    p = clamp(p, src_lo, src_hi - 1);\n"
-"    return palette.Load(int3((int)frame_idx.Load(int3(p, 0)), 0, 0)).rgb;\n"
+"    int i = (int)frame_idx.Load(int3(p, 0));\n"
+"    if (i == key) return centre_colour;\n"
+"    return palette.Load(int3(i, 0, 0)).rgb;\n"
 "}\n"
 "float3 area(float2 t) {\n"
 "    float2 f = max(inv_scale, 1.0);\n"                        /* the footprint of one screen pixel, in texels (>= 1) */
@@ -80,10 +84,9 @@ static const char k_hlsl[] =
 "    }\n"
 "    return sum / wsum;\n"
 "}\n"
-"float4 ps(float4 pos : SV_Position) : SV_Target {\n"
-"    float2 t = (pos.xy - origin) * inv_scale + float2(src_lo);\n"
-"    if (mode == 0) return float4(colour(int2(floor(t))), 1);\n"
-"    if (inv_scale.x > 1.001 || inv_scale.y > 1.001) return float4(area(t), 1);\n"
+"float3 shade(float2 t) {\n"
+"    if (mode == 0) return colour(int2(floor(t)));\n"
+"    if (inv_scale.x > 1.001 || inv_scale.y > 1.001) return area(t);\n"
 "    float2 tf = floor(t);\n"
 "    float2 d = (t - tf) - 0.5;\n"
 "    float  pre = (mode == 2) ? 1.0 : prescale;\n"
@@ -96,7 +99,15 @@ static const char k_hlsl[] =
 "    float3 c = colour(i + int2(0, 1)), e = colour(i + int2(1, 1));\n"
 "    float3 o = lerp(lerp(a, b, w.x), lerp(c, e, w.x), w.y);\n"
 "    if (mode == 3 && inv_scale.y <= 0.5) o *= 0.62 + 0.38 * sin((t.y - tf.y) * 3.14159265);\n"
-"    return float4(o, 1);\n"
+"    return o;\n"
+"}\n"
+"float4 ps(float4 pos : SV_Position) : SV_Target {\n"
+"    float2 t = (pos.xy - origin) * inv_scale + float2(src_lo);\n"
+"    int2 p0 = clamp(int2(floor(t)), src_lo, src_hi - 1);\n"
+"    int i0 = (int)frame_idx.Load(int3(p0, 0));\n"
+"    if (i0 == key) discard;\n"                                /* transparent: the world behind shows */
+"    centre_colour = palette.Load(int3(i0, 0, 0)).rgb;\n"
+"    return float4(shade(t) * (1.0 - dim), 1);\n"
 "}\n";
 
 typedef struct {
@@ -105,6 +116,9 @@ typedef struct {
     float prescale;
     int   mode;
     int   src_lo[2], src_hi[2];
+    float dim;
+    int   key;
+    int   pad[2];                /* a constant buffer is a multiple of 16 bytes */
 } params_t;
 
 /* The regions of the last presented frame, for present_window_to_frame. */
@@ -644,6 +658,7 @@ void present_frame_regions(const uint8_t* pixels, int pitch, int w, int h, const
 
     /* No regions: the whole frame, letterboxed. */
     if (!regions || nregions <= 0) {
+        memset(&whole, 0, sizeof whole);
         whole.sx = 0, whole.sy = 0, whole.sw = w, whole.sh = h;
         whole.dx = s_dst_x, whole.dy = s_dst_y, whole.dw = dw, whole.dh = dh;
         regions = &whole;
@@ -671,7 +686,7 @@ void present_frame_regions(const uint8_t* pixels, int pitch, int w, int h, const
     for (r = 0; r < nregions; r++) {
         const present_region_t* g = &regions[r];
         double rs;
-        if (g->sw <= 0 || g->sh <= 0 || g->dw <= 0 || g->dh <= 0) continue;
+        if (g->sw <= 0 || g->sh <= 0 || g->dw <= 0 || g->dh <= 0 || g->map_only) continue;
         rs = (double)g->dw / g->sw;
         prescale = (int)floor(rs);
         if (prescale < 1) prescale = 1;
@@ -687,6 +702,8 @@ void present_frame_regions(const uint8_t* pixels, int pitch, int w, int h, const
         prm.src_lo[1] = g->sy;
         prm.src_hi[0] = g->sx + g->sw;
         prm.src_hi[1] = g->sy + g->sh;
+        prm.dim = g->dim;
+        prm.key = g->use_key ? g->key : -1;
         ID3D11DeviceContext_UpdateSubresource(s_ctx, (ID3D11Resource*)s_cb, 0, NULL, &prm, 0, 0);
         vp.TopLeftX = (float)g->dx;
         vp.TopLeftY = (float)g->dy;
@@ -710,11 +727,13 @@ int present_window_to_frame(int cx, int cy, int* fx, int* fy)
     /* Regions are drawn in order, so the last one containing the point is on top. */
     for (r = s_nregions - 1; r >= 0; r--) {
         const present_region_t* g = &s_regions[r];
-        if (cx < g->dx || cx >= g->dx + g->dw || cy < g->dy || cy >= g->dy + g->dh) continue;
+        if (!g->map_only && (cx < g->dx || cx >= g->dx + g->dw || cy < g->dy || cy >= g->dy + g->dh)) continue;
         x = g->sx + (int)floor(((cx - g->dx) + 0.5) * g->sw / g->dw);
         y = g->sy + (int)floor(((cy - g->dy) + 0.5) * g->sh / g->dh);
         if (x > g->sx + g->sw - 1) x = g->sx + g->sw - 1;
         if (y > g->sy + g->sh - 1) y = g->sy + g->sh - 1;
+        if (x < g->sx) x = g->sx;
+        if (y < g->sy) y = g->sy;
         if (fx) *fx = x;
         if (fy) *fy = y;
         return 1;

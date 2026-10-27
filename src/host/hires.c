@@ -140,6 +140,7 @@ static void unlock(void) { LeaveCriticalSection(&g_cs); }
 static void set_mem_rect(uint32_t addr, int l, int t, int r, int b) {
     MEM32(addr) = (uint32_t)l, MEM32(addr + 4) = (uint32_t)t, MEM32(addr + 8) = (uint32_t)r, MEM32(addr + 12) = (uint32_t)b;
 }
+static int g_snap_taken;                /* this dialog's backdrop snapshot has been taken (game thread) */
 static int g_dialog;                    /* game thread: a widget screen of the mission is up, in the 640x480 geometry (enter_dialog) */
 static void clip_view(void) { if (g_dialog) set_mem_rect(ADDR_CLIP, 0, 0, 640, 480); else set_mem_rect(ADDR_CLIP, 0, 0, g_vw, STRIP_H + g_vh); }
 static void clip_full(void) { if (g_dialog) set_mem_rect(ADDR_CLIP, 0, 0, 640, 480); else set_mem_rect(ADDR_CLIP, 0, 0, g_a, g_hc); }
@@ -335,6 +336,8 @@ static void restore_640(void) {
     unlock();
     g_geo = 0;
     g_dialog = 0;
+    g_snap_taken = 0;
+    vdd_dialog_end();
     g_m1 = g_m2 = 0;
     g_applied_zoom = -1;
 }
@@ -473,7 +476,24 @@ static void apply_geometry(int cw, int ch, int zi) {
 #define SUB_DIALOG_LAST  31
 #define ADDR_SUBSTATE    0x00511DBCu
 
+#define ADDR_CURSOR_SAVE 0x004FCDF4u    /* the cursor's save-under surface (restored by its draw's first Blt) */
+static unsigned g_dlg_sub;              /* the dialog screen the corner was last prepared for */
+
+/* In the frame a dialog opens, the cursor's draw (a wrapper below) runs after the world and the HUD are drawn and before
+ * the cursor is: the back buffer is then the clean frozen world. */
+static int dialog_substate(void) {
+    unsigned sub = MEM32(ADDR_SUBSTATE);
+    return (int)MEM32(ADDR_STATE) == STATE_MISSION && sub >= SUB_DIALOG_FIRST && sub <= SUB_DIALOG_LAST;
+}
+
 static void enter_dialog(void) {
+    if (!g_snap_taken) {                /* the cursor's draw did not see this dialog open: the shown frame, cursor in it */
+        vdd_dialog_snapshot(1);
+        g_snap_taken = 1;
+        fprintf(stderr, "[hires] dialog backdrop: the shown frame (the cursor draw came first)\n");
+    }
+    vdd_dialog_begin(MEM32(ADDR_CURSOR_SAVE));
+    g_dlg_sub = MEM32(ADDR_SUBSTATE);
     MEM32(ADDR_SCREEN_W) = 640, MEM32(ADDR_SCREEN_H) = 480;
     set_mem_rect(ADDR_CLIP, 0, 0, 640, 480);
     set_mem_rect(ADDR_BLIT, 0, STRIP_H, 624, 480);
@@ -487,6 +507,8 @@ static void enter_dialog(void) {
 static void apply_geometry(int cw, int ch, int zi);
 static void leave_dialog(void) {
     g_dialog = 0;
+    g_snap_taken = 0;
+    vdd_dialog_end();
     lock();
     g_view.dialog = 0;
     unlock();
@@ -499,12 +521,19 @@ static void dialog_check(void) {
     int want = (int)MEM32(ADDR_STATE) == STATE_MISSION && sub >= SUB_DIALOG_FIRST && sub <= SUB_DIALOG_LAST;
     if (want && !g_dialog) enter_dialog();
     else if (!want && g_dialog) leave_dialog();
+    else if (want && sub != g_dlg_sub) {    /* the next screen of the dialogs (the menu's Controls, Audio, back): a clean corner for it */
+        g_dlg_sub = sub;
+        vdd_dialog_begin(MEM32(ADDR_CURSOR_SAVE));
+        }
 }
 
 void sub_004260C0(void) {
     static volatile LONG seen;
     first_hit(&seen, "state-2 frame 0x004260C0");
     if (g_enabled && g_geo) dialog_check();     /* before the dispatch builds the screen */
+    if (g_enabled && g_geo && g_dialog) {
+        vdd_dialog_refill();
+    }
     sub_004260C0_lifted();
     if (g_enabled && g_geo) dialog_check();     /* the screen closed in it: the view's geometry for the rest of the frame */
 }
@@ -522,6 +551,16 @@ void sub_004143A0(void) {
 void sub_00412FE0(void) {
     static volatile LONG seen;
     first_hit(&seen, "cursor draw 0x00412FE0");
+    if (g_geo && g_enabled && !g_dialog && (int)MEM32(ADDR_STATE) == STATE_MISSION && MEM32(ADDR_SUBSTATE) == 33) {
+        /* Playing: the back buffer here is a whole frame without this frame's cursor. Keep one every 150 ms as the world a
+         * dialog will be shown over (the frame in which it opens is partial: the units are being redrawn). */
+        static DWORD last;
+        DWORD now = GetTickCount();
+        if (now - last >= 150 || !g_snap_taken) {
+            if (vdd_dialog_snapshot(0)) g_snap_taken = 1;
+            last = now;
+        }
+    }
     if (!g_geo) { sub_00412FE0_lifted(); return; }
     clip_full();
     sub_00412FE0_lifted();
@@ -683,6 +722,17 @@ void sub_0041E440(void) {
     if (n >= 500) InterlockedIncrement(&g_lim.depth_full);
 }
 
+/* A dialog screen builds its picture by copying the back buffer's corner into the primary (0x0044D6D0, called by each
+ * screen's builder before it draws its widgets). The back buffer then still holds what the frame that opened the dialog
+ * drew in the corner (the world's compose, the HUD's strip and bars at the view's geometry): after the copy the corner is
+ * the key again, so what the widgets draw next is all that is left of the picture. */
+void sub_0044D6D0(void) {
+    static volatile LONG seen;
+    first_hit(&seen, "dialog capture 0x0044D6D0");
+    sub_0044D6D0_lifted();
+    if (g_enabled && g_geo && g_dialog) vdd_dialog_clear(MEM32(ADDR_CURSOR_SAVE));
+}
+
 static uint32_t g_split_lo = 0xFFFFFFFFu, g_split_hi;
 static volatile LONG g_split_ready;
 
@@ -708,6 +758,7 @@ hires_fn hires_lookup(uint32_t va) {
     case 0x00460FD0u: return sub_00460FD0;
     case 0x0041DCE0u: return sub_0041DCE0;
     case 0x0041E440u: return sub_0041E440;
+    case 0x0044D6D0u: return sub_0044D6D0;
     case 0x004193C0u: return panel_update;
     default: break;
     }

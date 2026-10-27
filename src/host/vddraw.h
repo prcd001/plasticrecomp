@@ -2,6 +2,7 @@
 #ifndef PLASTICRECOMP_VDDRAW_H
 #define PLASTICRECOMP_VDDRAW_H
 #include <windows.h>
+#include <stdint.h>
 
 /* Host shim for DDRAW's DirectDrawCreate (native32_shim_t). */
 void shim_DirectDrawCreate(void);
@@ -23,6 +24,16 @@ int vdd_cursor_at(int cx, int cy, POINT* p);   /* the same for a given client pi
 int  vdd_set_logical(int w, int h);
 void vdd_get_logical(int* w, int* h);
 int  vdd_capacity(int* w, int* h);
+
+/* The mission's dialogs over the frozen battlefield (hires.c): vdd_dialog_snapshot keeps the back buffer (or, with
+ * from_primary, the shown frame) as the world behind the dialog; vdd_dialog_begin makes the dialog's 640x480 corner
+ * see-through (see vddraw.c) and gives the cursor's save-under surface (a guest pointer) the same treatment;
+ * vdd_dialog_end goes back to the plain frame. Game thread. */
+int  vdd_dialog_snapshot(int from_primary);
+int  vdd_dialog_begin(uint32_t save_under);
+void vdd_dialog_refill(void);
+void vdd_dialog_clear(uint32_t save_under);
+void vdd_dialog_end(void);
 
 /* A line in the title bar for 2 s (and the log), like the scaling mode's name. Any thread. */
 void vdd_notice(const char* text);

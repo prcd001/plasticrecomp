@@ -838,6 +838,112 @@ static void ui_step(int dir) {
     if (vdd_trace) fprintf(stderr, "[ddraw] UI scale %s\n", cur ? "set" : "follows the world");
 }
 
+/* ---- the mission's dialogs over the frozen battlefield (hires.c "dialogs") ----------------------------------
+ * While a dialog is up the game draws its 640x480 screen into the corner of the frame and the world is not redrawn.
+ * The presenter shows the world as it was when the dialog opened (a snapshot of the back buffer, taken before the
+ * frame's cursor was drawn) over the whole window, as in play, and the dialog's 640x480 picture on top, centred at
+ * the UI scale. A small dialog (the game menu, the HQ box) has to be see-through between its widgets: when it opens
+ * its corner of both pages is filled with a key index (the palette entry nearest magenta) and so is the cursor's
+ * save-under surface, so the game's own drawing leaves exactly the widgets (and the cursor) over key pixels, which the
+ * presenter does not draw. A full-screen sheet (instruction sheet, F1's map, Controls, Audio, Save) has no key pixels left
+ * and is drawn opaque, over a dimmed world. The snapshot and the live corner live in the presenter's frame buffer
+ * below the logical frame (rows h .. h+479). */
+#define DLG_W 640
+#define DLG_H 480
+static uint8_t* g_snap;                 /* the world as it was when the dialog opened, g_snap_w x g_snap_h */
+static int g_snap_w, g_snap_h;
+static volatile LONG g_snap_serial;
+static volatile LONG g_key = -1;        /* the transparent index while a dialog is up, else -1 */
+static volatile LONG g_dlg_opaque;      /* the dialog covers its picture entirely: dim the world behind */
+static volatile LONG g_dlg_ready;       /* the dialog screen has been built (the capture hook cleared the corner): its picture may show */
+static volatile DWORD g_dlg_began;      /* GetTickCount() when its screen was announced: shown anyway after 400 ms, if no hook came */
+
+static int dialog_backdrop_ok(int w, int h) { return g_key >= 0 && g_snap_serial && g_snap_w == w && g_snap_h == h; }
+
+/* Copies the back buffer (or the primary) as it is now. 1 on success. */
+int vdd_dialog_snapshot(int from_primary) {
+    int ok = 0;
+    EnterCriticalSection(&g_lock);
+    surf_t* src = g_primary ? (from_primary ? g_primary : g_primary->back) : NULL;
+    if (src && src->px) {
+        int w = src->w, h = src->h;
+        if (!g_snap) g_snap = (uint8_t*)malloc((size_t)g_cap_w * (size_t)g_cap_h);
+        if (g_snap) {
+            int rows = h;               /* only what is shown: the strip, the view and the panel column (rows 0 .. 21 + Wh, at least 480) */
+            hires_view_t hv;
+            if (hires_view(&hv) && hv.hc == h) rows = 21 + hv.wh > 480 ? (21 + hv.wh < h ? 21 + hv.wh : h) : 480;
+            for (int y = 0; y < rows; y++) memcpy(g_snap + (size_t)y * w, src->px + (size_t)y * src->pitch, (size_t)w);
+            g_snap_w = w, g_snap_h = h;
+            InterlockedIncrement(&g_snap_serial);
+            ok = 1;
+        }
+    }
+    LeaveCriticalSection(&g_lock);
+    return ok;
+}
+
+static void fill_surface(surf_t* s, int w, int h, int v) {
+    if (w > s->w) w = s->w;
+    if (h > s->h) h = s->h;
+    for (int y = 0; y < h; y++) memset(s->px + (size_t)y * s->pitch, v, (size_t)w);
+}
+
+/* A dialog (or its next screen) is about to build its picture: pick the key, fill the corner of both pages and the
+ * cursor's save-under surface (a guest pointer to one of ours) with it. Returns the key, or -1 if there is no primary. */
+int vdd_dialog_begin(uint32_t save_under) {
+    int key = 0;
+    EnterCriticalSection(&g_lock);
+    if (!g_primary) { LeaveCriticalSection(&g_lock); return -1; }
+    if (g_primary->pal) {
+        int best = 1 << 30;
+        for (int i = 0; i < 256; i++) {
+            int r = 255 - g_primary->pal->e[i].peRed, g = g_primary->pal->e[i].peGreen, b = 255 - g_primary->pal->e[i].peBlue, d = r * r + g * g + b * b;
+            if (d < best) best = d, key = i;
+        }
+    }
+    fill_surface(g_primary, DLG_W, DLG_H, key);
+    if (g_primary->back) fill_surface(g_primary->back, DLG_W, DLG_H, key);
+    if (g_world) fill_surface(g_world, DLG_W, DLG_H, key);   /* the game composes each frame's backdrop from it */
+    surf_t* su = (surf_t*)(uintptr_t)save_under;
+    if (su && su != g_primary && su != g_primary->back && su != g_world && su->vtbl == g_surf_vtbl && su->px) {
+        fill_surface(su, su->w, su->h, key);
+        if (vdd_trace) fprintf(stderr, "[ddraw] dialog: save-under surface %dx%d filled with the key\n", su->w, su->h);
+    }
+    g_key = key;
+    g_dlg_ready = 0;
+    g_dlg_began = GetTickCount();
+    LeaveCriticalSection(&g_lock);
+    fprintf(stderr, "[ddraw] dialog key index %d (palette %d,%d,%d)\n", key, g_primary->pal ? g_primary->pal->e[key].peRed : -1,
+            g_primary->pal ? g_primary->pal->e[key].peGreen : -1, g_primary->pal ? g_primary->pal->e[key].peBlue : -1);
+    return key;
+}
+
+/* Each dialog frame, before the game composes it: the world surface's corner is the key again (the game's leftover
+ * dirty-rectangle redraws put the world's units into it at the dialog's own geometry). */
+void vdd_dialog_refill(void) {
+    EnterCriticalSection(&g_lock);
+    if (g_key >= 0 && g_world) fill_surface(g_world, DLG_W, DLG_H, g_key);
+    LeaveCriticalSection(&g_lock);
+}
+
+/* Once, at the start of the first dispatch of a dialog screen (before it draws its widgets): everything the game drew
+ * into the corner meanwhile (the frame in which the dialog opened ends with the world's units and bars at the view's
+ * geometry) is the key again. */
+void vdd_dialog_clear(uint32_t save_under) {
+    EnterCriticalSection(&g_lock);
+    if (g_key >= 0 && g_primary) {
+        fill_surface(g_primary, DLG_W, DLG_H, g_key);
+        if (g_primary->back) fill_surface(g_primary->back, DLG_W, DLG_H, g_key);
+        if (g_world) fill_surface(g_world, DLG_W, DLG_H, g_key);
+        surf_t* su = (surf_t*)(uintptr_t)save_under;
+        if (su && su != g_primary && su != g_primary->back && su != g_world && su->vtbl == g_surf_vtbl && su->px) fill_surface(su, su->w, su->h, g_key);
+        g_dlg_ready = 1;
+    }
+    LeaveCriticalSection(&g_lock);
+}
+
+void vdd_dialog_end(void) { g_key = -1; }
+
 static int layout(int cw, int ch, int w, int h, present_region_t* rg) {
     /* test switches: PLASTIC_FORCE_LAYOUT=1 applies the mission layout anywhere,
      * PLASTIC_UI_HALVES=n presets the UI scale (n/2) */
@@ -853,7 +959,9 @@ static int layout(int cw, int ch, int w, int h, present_region_t* rg) {
     const int MW = 640, MH = 480;
     if (w < MW || h < MH) return 0;
     hires_view_t hv;
-    int hires = hires_view(&hv) && hv.a == w && hv.hc == h && !hv.dialog;   /* a dialog is the 640x480 corner, like a menu */
+    int act = hires_view(&hv) && hv.a == w && hv.hc == h;
+    int dlg = act && hv.dialog && dialog_backdrop_ok(w, h);       /* a dialog over the frozen battlefield */
+    int hires = act && (!hv.dialog || dlg);                        /* else a dialog is the 640x480 corner, like a menu */
     if (!hires && (w != MW || h != MH || (!force && (int)MEM32(ADDR_GAME_STATE) != STATE_MISSION))) {
         if (w == MW && h == MH) return 0;
         double f = present_fit_scale(cw, ch, MW, MH);
@@ -897,6 +1005,21 @@ static int layout(int cw, int ch, int w, int h, present_region_t* rg) {
         rg[n].dw = (int)((hv.a - right) * u + 0.5), rg[n].dh = (int)((MH - STRIP_Y) * u + 0.5);
         rg[n].dx = cw - rg[n].dw, rg[n].dy = (int)(STRIP_Y * u + 0.5);
         n++;
+        if (dlg && (g_dlg_ready || GetTickCount() - g_dlg_began > 400)) {
+            int dw = (int)(MW * u + 0.5), dh = (int)(MH * u + 0.5), opaque = (int)g_dlg_opaque;
+            if (opaque) for (int i = 0; i < n; i++) rg[i].dim = 0.55f;
+            rg[n].sx = 0, rg[n].sy = h, rg[n].sw = MW, rg[n].sh = MH;           /* the live corner, below the snapshot */
+            rg[n].dw = dw, rg[n].dh = dh, rg[n].dx = (cw - dw) / 2, rg[n].dy = (ch - dh) / 2;
+            rg[n].use_key = 1, rg[n].key = (int)g_key;       /* a sheet has key pixels too (its rounded corners) */
+            n++;
+            rg[n] = rg[n - 1];                                                  /* and the mapping for the pointer, anywhere in the window */
+            rg[n].sy = 0, rg[n].use_key = 0, rg[n].map_only = 1;
+            if (!opaque) {              /* a small dialog: the strip row is the game's HUD repaint, the snapshot has it */
+                int cut = (int)(STRIP_Y * u + 0.5);
+                rg[n - 1].sy += STRIP_Y, rg[n - 1].sh -= STRIP_Y, rg[n - 1].dy += cut, rg[n - 1].dh -= cut;
+            }
+            n++;
+        }
         return n;
     }
     int pw = (int)(MW * s + 0.5), ph = (int)(MH * s + 0.5);
@@ -987,6 +1110,31 @@ static void dump_view(const uint8_t* frame, int fw, int fh, const PALETTEENTRY* 
     fprintf(stderr, "[host] view dump %s\n", path);
 }
 
+/* Test switch PLASTIC_DUMP_CORNER=<dir>: while a dialog is up, the live 640x480 corner as the game drew it (the key index
+ * shows as that palette entry, magenta) goes to <dir>\\corner_<n>.bmp about every 700 ms (at most 80). */
+static void dump_corner(const uint8_t* corner, int stride, const PALETTEENTRY* pal) {
+    static int n;
+    static DWORD last;
+    const char* dir = getenv("PLASTIC_DUMP_CORNER");
+    if (!dir || !*dir || n >= 80) return;
+    DWORD now = GetTickCount();
+    if (n && now - last < 700) return;
+    last = now;
+    char path[MAX_PATH];
+    _snprintf(path, sizeof path - 1, "%s\\corner_%02d.bmp", dir, n++);
+    path[sizeof path - 1] = 0;
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    int w = DLG_W, h = DLG_H, rowb = w;
+    BITMAPFILEHEADER fh = { 0x4D42, (DWORD)(14 + 40 + 1024 + rowb * h), 0, 0, 14 + 40 + 1024 };
+    BITMAPINFOHEADER ih = { sizeof ih, w, h, 1, 8, BI_RGB, (DWORD)(rowb * h), 0, 0, 256, 0 };
+    RGBQUAD q[256];
+    for (int i = 0; i < 256; i++) q[i].rgbRed = pal[i].peRed, q[i].rgbGreen = pal[i].peGreen, q[i].rgbBlue = pal[i].peBlue, q[i].rgbReserved = 0;
+    fwrite(&fh, 1, sizeof fh, f), fwrite(&ih, 1, sizeof ih, f), fwrite(q, 1, sizeof q, f);
+    for (int y = h - 1; y >= 0; y--) fwrite(corner + (size_t)y * stride, 1, (size_t)rowb, f);
+    fclose(f);
+}
+
 /* Shows the primary about 60 times a second (present_frame waits for vsync). It
  * owns the D3D device, created here, on this thread only. The pixels are copied
  * under the lock, so a Flip never happens halfway through a copy. */
@@ -1011,7 +1159,8 @@ static DWORD WINAPI presenter(LPVOID unused) {
         return 1;
     }
     /* the largest frame the primary can hold; the logical size inside it changes */
-    size_t frame_size = (size_t)(g_cap_w ? g_cap_w : 1600) * (size_t)(g_cap_h ? g_cap_h : 1200);
+    size_t frame_size = (size_t)(g_cap_w ? g_cap_w : 1600) * (size_t)(g_cap_h ? g_cap_h + DLG_H : 1200 + DLG_H);   /* + the live corner of a dialog */
+    LONG snap_copied = 0;
     uint8_t* frame = (uint8_t*)malloc(frame_size);
     if (!frame) { fprintf(stderr, "[ddraw] presenter: no memory for the frame\n"); return 1; }
     PALETTEENTRY pal[256];
@@ -1020,13 +1169,26 @@ static DWORD WINAPI presenter(LPVOID unused) {
     int probe_w = 0, probe_h = 0, probe_done = 0;
     if (getenv("PLASTIC_LOGICAL_PROBE")) sscanf(getenv("PLASTIC_LOGICAL_PROBE"), "%dx%d", &probe_w, &probe_h);
     for (;;) {
-        int w, h;
+        int w, h, dlg = 0;
+        hires_view_t dv;
+        int dview = hires_view(&dv) && dv.dialog;
         if (probe_w && !probe_done && g_world) probe_done = vdd_set_logical(probe_w, probe_h) ? 1 : -1;
         EnterCriticalSection(&g_lock);
         surf_t* p = g_primary;
         w = p->w, h = p->h;
-        int fits = (size_t)w * h <= frame_size;
-        if (fits)
+        dlg = dview && dv.a == w && dv.hc == h && dialog_backdrop_ok(w, h);
+        int fits = (size_t)w * (h + (dlg ? DLG_H : 0)) <= frame_size;
+        if (fits && dlg) {
+            /* a dialog: the frozen world in rows 0..h (copied once per dialog), the live 640x480 corner below it */
+            if (snap_copied != g_snap_serial) { memcpy(frame, g_snap, (size_t)w * h); snap_copied = g_snap_serial; }
+            int keyed = 0;
+            for (int y = 0; y < DLG_H; y++) {
+                const uint8_t* row = p->px + (size_t)y * p->pitch;
+                memcpy(frame + (size_t)(h + y) * w, row, DLG_W);
+                for (int x = 0; x < DLG_W; x++) keyed += row[x] == (uint8_t)g_key;
+            }
+            g_dlg_opaque = keyed < DLG_W * DLG_H / 50;
+        } else if (fits)
             for (int y = 0; y < h; y++) memcpy(frame + y * w, p->px + y * p->pitch, (size_t)w);
         if (p->pal) memcpy(pal, p->pal->e, sizeof pal); else memset(pal, 0, sizeof pal);
         LeaveCriticalSection(&g_lock);
@@ -1044,11 +1206,13 @@ static DWORD WINAPI presenter(LPVOID unused) {
             QueryPerformanceCounter(&last);
         }
         dump_load_frame(frame, w, h, pal);
+        if (dlg) dump_corner(frame + (size_t)h * w, w, pal);
         if (g_dump_req) dump_view(frame, w, h, pal);
-        present_region_t rg[4];
+        present_region_t rg[8];
         RECT rc;
+        memset(rg, 0, sizeof rg);
         int n = GetClientRect(g_hwnd, &rc) ? layout(rc.right, rc.bottom, w, h, rg) : 0;
-        present_frame_regions(frame, w, w, h, pal, n ? rg : NULL, n);
+        present_frame_regions(frame, w, w, dlg ? h + DLG_H : h, pal, n ? rg : NULL, n);
         InterlockedIncrement(&vdd_presented);
         {
             static LARGE_INTEGER freq, lastp;
