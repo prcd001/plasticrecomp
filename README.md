@@ -47,6 +47,14 @@ Where the work stands: `docs/HANDOFF.md`. What was measured: `NOTES.md`. The res
 | `src/recomp/gen/`, `work/`, `build/` | lifted C, analysis output, objects and the host exe | no |
 | `game/` | working copy of the disc's files | no |
 
+## Start it easily
+
+- **First time:** double-click `Setup.bat`. It asks for the folder with your own `ArmyMen2.exe` (disc, copy or install) and
+  runs `scripts\setup.ps1`: it copies the game, lifts it and builds the host.
+- **Every time after:** double-click `Play.bat`. It checks the build and the game folder, refuses a second copy, starts the
+  game and keeps the output in `build\last_run.log`. Options pass through: `Play.bat --fullscreen`.
+- The retail disc build wants the disc (or a mounted image of it) when you pick SINGLE PLAYER or BOOT CAMP.
+
 ## Build and run
 
 From `C:\plasticrecomp`, in PowerShell:
