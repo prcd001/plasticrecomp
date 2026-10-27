@@ -138,7 +138,7 @@ Test switches (environment variables, for diagnosis only):
 - `PLASTIC_PRESENTER_PRIO=0`: the presenter thread keeps normal priority (default: one step above, so it preempts the
   game on their shared core and holds 60 fps while the game loop spins at ~2900 Flips/s; with normal priority it fell to ~30 fps
   while the camera scrolled). `PLASTIC_FLIP_SLEEP=ms`: the game thread sleeps that long after each Flip (a throttle; off).
-- `HOST_ONLY=1 cmd /c scriptsuild_host.bat`: rebuild only the host files, reusing the lifted C's objects.
+- `HOST_ONLY=1 cmd /c scripts\build_host.bat`: rebuild only the host files, reusing the lifted C's objects.
 - `PLASTIC_LOGICAL_PROBE=WxH`: once the game has made its world surface, set the primary, back buffer and
   world surface's logical size to W x H (within the capacity), to check that menus, movies and the HUD
   still show the 640x480 picture.
@@ -149,6 +149,11 @@ Test switches (environment variables, for diagnosis only):
   mapped as the Windows cursor would be (negative: from the right / bottom edge, so `@-1,500` is the
   right edge and exercises the edge snapping). With `,click` a left click (button 0 down, then up on
   the next poll) follows once the cursor has arrived; `,rclick` is the right button.
+  A time `t` is seconds since the host process started, or relative to the mission's modal screens: `s24+1` is 1 s after
+  the mission's sub-state 24 (0x00511DBC; Boot Camp's HQ box) was first seen, `s22+3` after 22 (the instruction sheet,
+  F1's map), `s23` the game menu, `s27` audio, `s28` controls, `g+N` after 33 (play; seen first at the load, so
+  rather use the state of the last dialog). The sub-states are cleared by each map load, and an event whose
+  state has not come yet waits (a script is ordered), which makes a run independent of how long the load took.
 - `PLASTIC_KEYS="t:KEY;..."`: holds a DirectInput key down for 3 keyboard polls from time `t`. `KEY` is a
   DIK scancode (decimal or `0x..`) or ESC, ENTER, SPACE, MINUS, EQUALS, F1, P. ESC skips the intro movies.
   ZOOMIN / ZOOMOUT are no keys: they step the battlefield zoom once, like Plus / Minus in the window.

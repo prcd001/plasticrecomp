@@ -774,7 +774,7 @@ static int layout(int cw, int ch, int w, int h, present_region_t* rg) {
     const int MW = 640, MH = 480;
     if (w < MW || h < MH) return 0;
     hires_view_t hv;
-    int hires = hires_view(&hv) && hv.a == w && hv.hc == h;
+    int hires = hires_view(&hv) && hv.a == w && hv.hc == h && !hv.dialog;   /* a dialog is the 640x480 corner, like a menu */
     if (!hires && (w != MW || h != MH || (!force && (int)MEM32(ADDR_GAME_STATE) != STATE_MISSION))) {
         if (w == MW && h == MH) return 0;
         double f = (double)cw / MW < (double)ch / MH ? (double)cw / MW : (double)ch / MH;
@@ -983,7 +983,7 @@ static int cursor_from_client(POINT c, POINT* p) {
      * the hires frame is bigger than the world's picture: the window's border pixels stand for it. */
     hires_view_t hv;
     RECT rc;
-    if (hires_view(&hv) && GetClientRect(g_hwnd, &rc)) {
+    if (hires_view(&hv) && !hv.dialog && GetClientRect(g_hwnd, &rc)) {
         if (c.x <= 1) p->x = 0; else if (c.x >= rc.right - 2) p->x = hv.a - 1;
         if (c.y <= 1) p->y = 0; else if (c.y >= rc.bottom - 2) p->y = hv.hc - 1;
     }

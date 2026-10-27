@@ -147,14 +147,55 @@ static void game_cursor(int* x, int* y) {
  * on the next poll cycle) follows once the game's cursor has arrived.
  * PLASTIC_KEYS="t:KEY;..." holds a DirectInput key (a DIK number, decimal or 0x.., or ESC, ENTER,
  * SPACE) down for 3 keyboard polls from time t. Both are for diagnosis and scripted tests only. */
-typedef struct { double t; int x, y, click, rclick, client, fired; } script_ev_t;
-typedef struct { double t; int dik, polls; } key_ev_t;
+typedef struct { double t; int st; int x, y, click, rclick, client, fired; } script_ev_t;
+typedef struct { double t; int st; int dik, polls; } key_ev_t;
 static script_ev_t g_script[64];
 static key_ev_t g_keys[64];
 static int g_script_n, g_keys_n, g_script_init;
 static int g_script_cur = -1;               /* last entry reached */
 static DWORD g_click_ofs = DIMOFS_BUTTON0;   /* the button the script last pressed */
 static int g_click_wait, g_click_up;        /* cycles waited for the cursor / button up owed */
+
+/* Event times: "12" is 12 s after the host process started; "g+5" is 5 s after the mission's play state
+ * (sub-state 33 of game state 2, 0x00511DBC: the HQ box and the instruction sheet are closed) was first
+ * seen; "s24+1" is 1 s after sub-state 24 (the Boot Camp sheet) was first seen, and so on for any K.
+ * An event whose state has not been seen yet never fires (a script is ordered, so it waits there). */
+static double g_first_seen[64];
+static int g_first_init;
+#define ADDR_GAME_STATE_M 0x00511DA4u
+#define ADDR_SUBSTATE_M   0x00511DBCu
+static double host_seconds(void);
+static void states_poll(void) {
+    static int serial;
+    if (!g_first_init) { for (int i = 0; i < 64; i++) g_first_seen[i] = -1; g_first_init = 1; }
+    if ((int)MEM32(ADDR_GAME_STATE_M) != 2) return;
+    if (hires_mission_serial() != serial) {          /* a new mission's map load: its states are new */
+        serial = hires_mission_serial();
+        for (int i = 0; i < 64; i++) g_first_seen[i] = -1;
+    }
+    if (!serial || hires_loading()) return;          /* only once the mission is live (panel updates run) */
+    unsigned k = MEM32(ADDR_SUBSTATE_M);
+    if (k < 64 && g_first_seen[k] < 0) {
+        g_first_seen[k] = host_seconds();
+        if (getenv("PLASTIC_SCRIPT") || getenv("PLASTIC_KEYS")) fprintf(stderr, "[script] %.1f s: mission sub-state %u\n", g_first_seen[k], k);
+    }
+}
+static double ev_time(double t, int st) {
+    if (st < 0) return t;
+    return g_first_seen[st] < 0 ? 1e18 : g_first_seen[st] + t;
+}
+/* "12", "g+5", "s24+1" -> absolute time or relative, with the state it is relative to (-1: none) */
+static double parse_time(const char* tok, int* st) {
+    *st = -1;
+    if (tok[0] == 'g') { *st = 33; return tok[1] == '+' ? atof(tok + 2) : 0.0; }
+    if (tok[0] == 's') {
+        int k = atoi(tok + 1);
+        const char* plus = strchr(tok, '+');
+        *st = k < 0 ? 0 : k > 63 ? 63 : k;
+        return plus ? atof(plus + 1) : 0.0;
+    }
+    return atof(tok);
+}
 
 static double host_seconds(void) {
     static LARGE_INTEGER freq, t0;
@@ -199,7 +240,7 @@ static void script_init(void) {
             if (!c) continue;
             e.client = c[1] == '@';         /* "@x,y": a window client pixel (negative: from the right / bottom edge) */
             if (sscanf(c + 1 + e.client, "%d,%d", &x, &y) != 2) continue;
-            e.t = atof(tok), e.x = x, e.y = y;
+            e.t = parse_time(tok, &e.st), e.x = x, e.y = y;
             e.rclick = strstr(c, "rclick") != NULL;
             e.click = e.rclick || strstr(c, "click") != NULL;
             g_script[g_script_n++] = e;
@@ -211,7 +252,8 @@ static void script_init(void) {
         for (char* tok = strtok(buf, ";"); tok && g_keys_n < 64; tok = strtok(NULL, ";")) {
             char* c = strchr(tok, ':');
             if (!c) continue;
-            key_ev_t k = { atof(tok), dik_by_name(c + 1), 3 };
+            key_ev_t k = { 0, -1, dik_by_name(c + 1), 3 };
+            k.t = parse_time(tok, &k.st);
             if (k.dik > 0 && k.dik < 256) g_keys[g_keys_n++] = k;
         }
         fprintf(stderr, "[script] PLASTIC_KEYS: %d key(s)\n", g_keys_n);
@@ -224,7 +266,8 @@ static int script_target(POINT* t, int* click_now) {
     *click_now = 0;
     if (!g_script_n) return 0;
     double now = host_seconds();
-    while (g_script_cur + 1 < g_script_n && g_script[g_script_cur + 1].t <= now) {
+    states_poll();
+    while (g_script_cur + 1 < g_script_n && ev_time(g_script[g_script_cur + 1].t, g_script[g_script_cur + 1].st) <= now) {
         g_script_cur++;
         g_click_wait = 0;
         fprintf(stderr, "[script] %.1f s: cursor to (%d,%d)%s\n", now, g_script[g_script_cur].x,
@@ -242,8 +285,9 @@ static void inject_keys(void* data, DWORD cb) {
     script_init();
     if (cb != 256) return;
     double now = host_seconds();
+    states_poll();
     for (int i = 0; i < g_keys_n; i++) {
-        if (g_keys[i].t > now || g_keys[i].polls <= 0) continue;
+        if (ev_time(g_keys[i].t, g_keys[i].st) > now || g_keys[i].polls <= 0) continue;
         if (g_keys[i].dik == 0xF0 || g_keys[i].dik == 0xF1) {    /* ZOOMIN / ZOOMOUT: once, nothing for the game */
             if (g_keys[i].polls == 3) {
                 fprintf(stderr, "[script] %.1f s: zoom %s\n", now, g_keys[i].dik == 0xF0 ? "in" : "out");

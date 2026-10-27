@@ -28,12 +28,16 @@ void hires_disable(void);
  *   hud_right left edge of the panel in the frame (a-160 open .. a-16 closed)
  *   capped    the view is smaller than the window needs at this zoom (map or surface limit):
  *             the world is then drawn at one uniform scale instead of filling the window
+ *   dialog    a widget screen of the mission (game menu, audio, controls) is up: the game is in the 640x480
+ *             geometry and the frame's 640x480 corner is the picture
  *   zoom      the zoom factor */
-typedef struct { int ww, wh, a, hc, hud_right, capped; double zoom; } hires_view_t;
+typedef struct { int ww, wh, a, hc, hud_right, capped, dialog; double zoom; } hires_view_t;
 int hires_view(hires_view_t* v);
 
 /* Nonzero from a mission's map load until its first panel update (the loading screen; test dumps). */
 int hires_loading(void);
+/* Counts the mission map loads so far (test scripts' state clock, mouse.c). */
+int hires_mission_serial(void);
 
 /* Zoom one step along {1, 1.5, 2, 3, 4} (dir +1 zooms in). Applied at the next panel update. */
 void hires_zoom_step(int dir);

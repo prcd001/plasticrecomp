@@ -23,6 +23,7 @@
  *   0x00412FE0  the cursor's draw                                                            clip
  *   0x00424CA0  edge scroll                                                                  clip
  *   0x00424AD0  state change request (arg: the new state), M4: leaving the mission
+ *   0x004260C0  the state-2 (mission) frame's dispatch: the mission's modal screens, see "dialogs" below
  * and, from the mouse poll, M4: back to 640x480 geometry when the mission is over.
  *
  * The geometry (the game's "screen" is the battlefield view; the HUD sits in its own column):
@@ -112,8 +113,9 @@ static void unlock(void) { LeaveCriticalSection(&g_cs); }
 static void set_mem_rect(uint32_t addr, int l, int t, int r, int b) {
     MEM32(addr) = (uint32_t)l, MEM32(addr + 4) = (uint32_t)t, MEM32(addr + 8) = (uint32_t)r, MEM32(addr + 12) = (uint32_t)b;
 }
-static void clip_view(void) { set_mem_rect(ADDR_CLIP, 0, 0, g_vw, STRIP_H + g_vh); }
-static void clip_full(void) { set_mem_rect(ADDR_CLIP, 0, 0, g_a, g_hc); }
+static int g_dialog;                    /* game thread: a widget screen of the mission is up, in the 640x480 geometry (enter_dialog) */
+static void clip_view(void) { if (g_dialog) set_mem_rect(ADDR_CLIP, 0, 0, 640, 480); else set_mem_rect(ADDR_CLIP, 0, 0, g_vw, STRIP_H + g_vh); }
+static void clip_full(void) { if (g_dialog) set_mem_rect(ADDR_CLIP, 0, 0, 640, 480); else set_mem_rect(ADDR_CLIP, 0, 0, g_a, g_hc); }
 
 static DWORD WINAPI log_thread(LPVOID unused) {
     (void)unused;
@@ -126,10 +128,11 @@ static DWORD WINAPI log_thread(LPVOID unused) {
              mx = InterlockedExchange(&vdd_flip_us_max, 0), lp = g_loops;
         LONG n = fr - last_frames;
         fprintf(stderr, "[hires-log] %s view %dx%d zoom %.1f frame %.2f ms (max %.1f; %.1f game frames/s, %ld loops/s) "
-                "presenter %.1f fps eye %d,%d (%08X %08X)\n",
+                "presenter %.1f fps eye %d,%d (%08X %08X) state %d/%d/%d\n",
                 act ? "on " : "off", act ? v.ww : 0, act ? v.wh : 0, act ? v.zoom : 0.0, n ? us / 1000.0 / n : 0.0,
                 mx / 1000.0, n / 2.0, (long)((lp - last_loops) / 2), (pres - last_pres) / 2.0,
-                (int)(int16_t)MEM16(ADDR_EYE), (int)(int16_t)MEM16(ADDR_EYE + 2), MEM32(ADDR_EYE), MEM32(ADDR_EYE + 4));
+                (int)(int16_t)MEM16(ADDR_EYE), (int)(int16_t)MEM16(ADDR_EYE + 2), MEM32(ADDR_EYE), MEM32(ADDR_EYE + 4),
+                (int)MEM32(ADDR_STATE), (int)MEM32(0x00511DBCu), (int)MEM32(0x00511DC0u));
         last_pres = pres, last_frames = fr, last_loops = lp;
     }
 }
@@ -182,8 +185,10 @@ static void restore_640(void) {
     vdd_set_logical(640, 480);
     lock();
     g_active = 0;
+    g_view.dialog = 0;
     unlock();
     g_geo = 0;
+    g_dialog = 0;
     g_m1 = g_m2 = 0;
     g_applied_zoom = -1;
 }
@@ -208,6 +213,8 @@ void hires_poll_state(void) {
 static volatile LONG g_loading;         /* from the map load to the first panel update */
 
 int hires_loading(void) { return g_loading; }
+static volatile LONG g_mission_serial;
+int hires_mission_serial(void) { return (int)g_mission_serial; }
 
 /* M1's writes: the screen is the whole frame A x Hc, so the surfaces and the tile cache are made for the
  * largest view. Returns 0 (nothing changed) when a virtual surface lacks the capacity. */
@@ -228,6 +235,7 @@ void sub_0042C440(void) {
     static volatile LONG seen;
     first_hit(&seen, "map load 0x0042C440");
     g_loading = 1;
+    InterlockedIncrement(&g_mission_serial);
     g_map_hires = 0;
     if (g_enabled) {
         int cw, ch;
@@ -301,6 +309,58 @@ static void apply_geometry(int cw, int ch, int zi) {
     g_applied_zoom = zi, g_applied_cw = cw, g_applied_ch = ch;
     fprintf(stderr, "[hires] M3 geometry: client %dx%d, zoom %.1f -> view %dx%d%s (map %dx%d, A %d Hc %d, panel %d)\n", cw, ch, z,
             ww, wh, g_view.capped ? " (capped)" : "", map_w, map_h, g_a, g_hc, g_hud_right);
+}
+
+/* ------------------------------------------------------------------- dialogs
+ *
+ * The mission's modal screens (sub-states 22..31 of 0x00511DBC: the instruction sheet, the HQ message box,
+ * the game menu, audio, controls, save and load) are built for 640x480: a widget screen's base rect is the
+ * full SCREEN_W x SCREEN_H, backdrops and pictures are centred on it, and the buttons and fields sit at
+ * fixed 640x480 positions. With the hires SCREEN_W/H the backdrop landed in the middle of the view and the
+ * fields in the corner (docs/R_step4_plan.md R2). So while one is up the game gets the 640x480 geometry
+ * back, and the presenter shows the frame's 640x480 corner as one letterboxed picture, as it does for the
+ * menus. The surfaces keep their size and the world and HUD in them are untouched: leaving re-applies the
+ * view's geometry and asks for a full redraw. Entered and left from the wrapper of the state-2 frame,
+ * sub_004260C0, which builds the screen. (22 and 24 are the ones seen at Boot Camp's start; 23 the menu,
+ * 27 audio, 28 controls; the rest is by the dispatch table at 0x00426230, untested.) */
+#define SUB_DIALOG_FIRST 22
+#define SUB_DIALOG_LAST  31
+#define ADDR_SUBSTATE    0x00511DBCu
+
+static void enter_dialog(void) {
+    MEM32(ADDR_SCREEN_W) = 640, MEM32(ADDR_SCREEN_H) = 480;
+    set_mem_rect(ADDR_CLIP, 0, 0, 640, 480);
+    set_mem_rect(ADDR_BLIT, 0, STRIP_H, 624, 480);
+    g_dialog = 1;
+    lock();
+    g_view.dialog = 1;
+    unlock();
+    fprintf(stderr, "[hires] dialog (sub-state %u): 640x480 geometry\n", MEM32(ADDR_SUBSTATE));
+}
+
+static void apply_geometry(int cw, int ch, int zi);
+static void leave_dialog(void) {
+    g_dialog = 0;
+    lock();
+    g_view.dialog = 0;
+    unlock();
+    if (g_applied_zoom >= 0) apply_geometry(g_applied_cw, g_applied_ch, g_applied_zoom);
+    fprintf(stderr, "[hires] dialog closed (sub-state %u): view geometry again\n", MEM32(ADDR_SUBSTATE));
+}
+
+static void dialog_check(void) {
+    unsigned sub = MEM32(ADDR_SUBSTATE);
+    int want = (int)MEM32(ADDR_STATE) == STATE_MISSION && sub >= SUB_DIALOG_FIRST && sub <= SUB_DIALOG_LAST;
+    if (want && !g_dialog) enter_dialog();
+    else if (!want && g_dialog) leave_dialog();
+}
+
+void sub_004260C0(void) {
+    static volatile LONG seen;
+    first_hit(&seen, "state-2 frame 0x004260C0");
+    if (g_enabled && g_geo) dialog_check();     /* before the dispatch builds the screen */
+    sub_004260C0_lifted();
+    if (g_enabled && g_geo) dialog_check();     /* the screen closed in it: the view's geometry for the rest of the frame */
 }
 
 /* HudPaint, the cursor's draw and the edge scroll work on the whole frame, HUD column included. */
@@ -405,6 +465,7 @@ hires_fn hires_lookup(uint32_t va) {
     case 0x00412FE0u: return sub_00412FE0;
     case 0x00424CA0u: return sub_00424CA0;
     case 0x00424AD0u: return sub_00424AD0;
+    case 0x004260C0u: return sub_004260C0;
     case 0x004193C0u: return panel_update;
     default: break;
     }
