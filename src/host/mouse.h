@@ -20,6 +20,8 @@ void mouse_set_cursor_vars(uint32_t x_va, uint32_t y_va);
  * host's import table, which cnc-ddraw hooks to answer in game pixels. */
 #include <windows.h>
 extern int (*mouse_target)(POINT* p);
+/* The same mapping for the window client pixel (cx, cy) (test scripts: PLASTIC_SCRIPT "@x,y"). */
+extern int (*mouse_target_client)(int cx, int cy, POINT* p);
 
 /* Force the game's mouse device non-exclusive (cnc-ddraw does it when present). */
 extern int mouse_nonexclusive;

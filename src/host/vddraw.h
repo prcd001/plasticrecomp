@@ -14,6 +14,7 @@ HWND vdd_window(void);
 
 /* The Windows cursor in frame pixels (the presenter's mapping); 0 if unknown. */
 int vdd_cursor(POINT* p);
+int vdd_cursor_at(int cx, int cy, POINT* p);   /* the same for a given client pixel (negative: from the right / bottom) */
 
 /* The size of the big surfaces (primary, back buffer, world surface) as the game sees it, within the
  * capacity they were allocated at (a function of the monitor: the largest battlefield plus a 160-px
@@ -25,6 +26,9 @@ int  vdd_capacity(int* w, int* h);
 
 /* Frames the presenter has shown so far. */
 extern volatile LONG vdd_presented;
+
+/* The game's Flips so far, and the sum and maximum (microseconds) of the intervals between them. */
+extern volatile LONG vdd_flips, vdd_flip_us_sum, vdd_flip_us_max;
 
 /* --dd-trace: log surface creation and unimplemented calls. */
 extern int vdd_trace;

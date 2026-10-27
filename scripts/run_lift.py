@@ -116,7 +116,9 @@ def table_arms(image, base, func):
 
 
 # Functions the host wraps by name (src/host/hires.c): each definition is renamed sub_X_lifted.
-WRAP = (0x0042C440, 0x00413480)
+#   0x0042C440 map load, 0x00413480 HUD create, 0x004143A0 HudPaint, 0x00412FE0 cursor draw,
+#   0x00424CA0 edge scroll, 0x00424AD0 state change request
+WRAP = (0x0042C440, 0x00413480, 0x004143A0, 0x00412FE0, 0x00424CA0, 0x00424AD0)
 
 
 def wrap_pass(out_dir, wrap=WRAP):

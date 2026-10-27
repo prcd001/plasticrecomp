@@ -8,7 +8,8 @@ used here only to say which game this is.
 The original 1999 code, lifted to C, runs natively on a 32-bit host. The host adds:
 - its own DirectDraw and a Direct3D 11 presenter, in a resizable window;
 - a mouse that follows the Windows pointer;
-- a HUD that scales separately from the battlefield.
+- a HUD that scales separately from the battlefield;
+- a battlefield that fills the window, however big (at 1x: one game pixel is one screen pixel).
 
 Where the work stands: `docs/HANDOFF.md`. What was measured: `NOTES.md`. The resolution plan:
 `docs/R_hires.md`.
@@ -36,7 +37,7 @@ Where the work stands: `docs/HANDOFF.md`. What was measured: `NOTES.md`. The res
 | `src/host/main.c` | the host: maps the guest at 0x00400000 and runs it on pcrecomp's native32; import shims, options, diagnostics | yes |
 | `src/host/vddraw.c` | the virtual DirectDraw (COM objects, DIB-section surfaces), the window, the presenter thread and the HUD/battlefield layout | yes |
 | `src/host/present.c` | the D3D11 presenter: palette lookup in the shader, nearest/sharp-bilinear, regions at different scales | yes |
-| `src/host/hires.c` | host wrappers that run in front of lifted functions (map load, HUD create, panel update), for step 4; pass-through for now | yes |
+| `src/host/hires.c` | step 4: host wrappers that run in front of lifted functions (map load, HUD create, panel update, HudPaint, cursor draw, edge scroll, state requests) and make the battlefield as big as the window: the game's screen geometry, zoom, the HUD column | yes |
 | `src/host/mouse.c` | the game's DirectInput mouse, fed from the Windows cursor | yes |
 | `scripts/` | lift (`run_lift.py`), setup for disc/GOG/Steam owners (`setup.ps1`), host build, presenter test, run, screenshot, key and hashing tools, the unattended Boot Camp run (`auto_bootcamp.ps1`, `compare_shots.py`) | yes |
 | `docs/` | `HANDOFF.md`, `R_hires.md` (resolution research and plan), `PROVENANCE.md` (the disc copies) | yes |
@@ -66,7 +67,8 @@ cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > 
 - **`scripts/run_lift.py`** is pcrecomp's default pipeline plus the jump-table arms it misses. Plain
   `python -m tools` output crashes in memmove. It also records which exe it lifted
   (`recomp_target.h`), and the host refuses to run any other.
-  It also renames the lifted definitions of the functions the host wraps (`WRAP` in the script) to `sub_X_lifted`
+  It also renames the lifted definitions of the functions the host wraps (`WRAP` in the script: map load, HUD create,
+  HudPaint, cursor draw, edge scroll, state request) to `sub_X_lifted`
   and writes `recomp_wrap.h` (their split entries), which `src/host/hires.c` uses: re-lift after pulling.
 
 ## In the game
@@ -74,7 +76,7 @@ cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > 
 | key | what |
 |---|---|
 | Shift+Plus / Shift+Minus | in a mission: HUD smaller / larger, in half steps from 1x up to the window's fit size |
-| Plus / Minus | reserved for battlefield zoom (step 4, not built yet) |
+| Plus / Minus | reserved for the battlefield zoom (next step; `PLASTIC_ZOOM` sets a fixed zoom until then) |
 | Escape | as in the original (skips movies, opens the mission menu) |
 
 ## Host options
@@ -89,6 +91,7 @@ cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > 
 | `--raw-mouse` | the game gets DirectInput's raw mouse counts, as in 1999 (default: it follows the Windows cursor) |
 | `--mouse-log` | log the game's mouse device calls and each cursor correction |
 | `--movie-log` | every 2 s: movie frames decoded, SmackWait go/hold, frames presented, foreground |
+| `--hires-log` | every 2 s in a mission: view size, zoom, game frame time (Flip to Flip), presenter fps, the camera's eye (0x514E0C) |
 | `--dd-trace` | log the virtual DirectDraw's surfaces and window messages |
 | `--imports` | with `--watchdog`: where each USER32/GDI32/DINPUT import slot really points |
 | `--no-route` | with `--cnc-ddraw`: leave USER32 as native32 bound it, skipping cnc-ddraw's hooks |
@@ -97,6 +100,9 @@ cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > 
 | `--dplay-check` | create the game's DirectPlay object and list its connections, then exit |
 
 Test switches (environment variables, for diagnosis only):
+- `PLASTIC_HIRES=0`: the battlefield stays 640x480 as in the original (the old layout; `1` turns the feature on).
+  `PLASTIC_ZOOM=n`: the first zoom index (0..4 = 1x, 1.5x, 2x, 3x, 4x).
+- `PLASTIC_DUMP_LOAD=dir`: while a mission loads, write the presented frame as `dir\load_n_WxH_stateS.bmp` every 100 ms.
 - `PLASTIC_FORCE_LAYOUT=1`: the mission layout applies everywhere.
 - `PLASTIC_UI_HALVES=n`: preset the UI scale to n/2.
 - `PLASTIC_NO_PRESENT=1`, `PLASTIC_NO_SUBCLASS=1`, `PLASTIC_NO_RESTYLE=1`, `PLASTIC_NO_DPI=1`:
@@ -107,8 +113,11 @@ Test switches (environment variables, for diagnosis only):
   still show the 640x480 picture.
 - `PLASTIC_SCRIPT="t:x,y[,click];..."`: drives the game's cursor with no real mouse. From the first
   step whose time `t` (seconds since the host process started) has passed, the cursor target is game
-  pixel x,y (640x480 menu or mission-screen pixels), whichever window has the foreground. With
-  `,click` a left click (button 0 down, then up on the next poll) follows once the cursor has arrived.
+  pixel x,y (the game's frame: 640x480 in menus; in a mission with the hires layout the frame is bigger, the
+  battlefield at 0,21), whichever window has the foreground. `t:@x,y` is a window client pixel instead,
+  mapped as the Windows cursor would be (negative: from the right / bottom edge, so `@-1,500` is the
+  right edge and exercises the edge snapping). With `,click` a left click (button 0 down, then up on
+  the next poll) follows once the cursor has arrived; `,rclick` is the right button.
 - `PLASTIC_KEYS="t:KEY;..."`: holds a DirectInput key down for 3 keyboard polls from time `t`. `KEY` is a
   DIK scancode (decimal or `0x..`) or ESC, ENTER, SPACE, MINUS, EQUALS, F1, P. ESC skips the intro movies.
 

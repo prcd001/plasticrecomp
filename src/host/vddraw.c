@@ -36,10 +36,12 @@
 #include "native32.h"
 #include "present.h"
 #include "vddraw.h"
+#include "hires.h"
 
 #define ARG(n) MEM32(g_esp + 4 + 4 * (n))
 
 int vdd_trace;                          /* --dd-trace */
+volatile LONG vdd_flips, vdd_flip_us_sum, vdd_flip_us_max;   /* Flips, and their intervals (hires.c logs them) */
 
 /* ------------------------------------------------------------------ objects */
 
@@ -243,6 +245,21 @@ static HRESULT WINAPI sf_Flip(surf_t* s, surf_t* target, DWORD flags) {
     HBITMAP h = s->dib; s->dib = b->dib; b->dib = h;
     HDC c = s->dc; s->dc = b->dc; b->dc = c;
     LeaveCriticalSection(&g_lock);
+    {                                   /* --hires-log: the game's frame rate is its Flip rate */
+        static LARGE_INTEGER freq, last;
+        LARGE_INTEGER now;
+        if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&now);
+        if (last.QuadPart) {
+            LONG us = (LONG)((now.QuadPart - last.QuadPart) * 1000000 / freq.QuadPart);
+            if (us < 2000000) {
+                InterlockedExchangeAdd(&vdd_flip_us_sum, us);
+                if (us > vdd_flip_us_max) vdd_flip_us_max = us;
+                InterlockedIncrement(&vdd_flips);
+            }
+        }
+        last = now;
+    }
     return DD_OK;
 }
 
@@ -596,6 +613,7 @@ static const void* const g_dd2_vtbl[24] = { DD_COMMON(dd2_SetDisplayMode), dd2_G
 #define ADDR_BLIT_RIGHT 0x00485328u
 #define ADDR_WORLD_SURFACE 0x00503100u  /* the game's world surface (a COM pointer) */
 #define STATE_MISSION 2
+#define STRIP_Y 21                      /* height of the top strip */
 
 static volatile LONG g_ui_halves;       /* UI scale x2; 0 = follow the world */
 
@@ -626,7 +644,9 @@ static int layout(int cw, int ch, int w, int h, present_region_t* rg) {
      * takes present_frame_regions' own whole-frame path. */
     const int MW = 640, MH = 480;
     if (w < MW || h < MH) return 0;
-    if (!force && (int)MEM32(ADDR_GAME_STATE) != STATE_MISSION) {
+    hires_view_t hv;
+    int hires = hires_view(&hv) && hv.a == w && hv.hc == h;
+    if (!hires && (w != MW || h != MH || (!force && (int)MEM32(ADDR_GAME_STATE) != STATE_MISSION))) {
         if (w == MW && h == MH) return 0;
         double f = (double)cw / MW < (double)ch / MH ? (double)cw / MW : (double)ch / MH;
         rg[0].sx = 0, rg[0].sy = 0, rg[0].sw = MW, rg[0].sh = MH;
@@ -634,35 +654,91 @@ static int layout(int cw, int ch, int w, int h, present_region_t* rg) {
         rg[0].dx = (cw - rg[0].dw) / 2, rg[0].dy = (ch - rg[0].dh) / 2;
         return 1;
     }
-    w = MW, h = MH;                     /* the mission layout below is 640x480 geometry */
-    double s = (double)cw / w < (double)ch / h ? (double)cw / w : (double)ch / h;
-    int pw = (int)(w * s + 0.5), ph = (int)(h * s + 0.5);
-    int px = (cw - pw) / 2, py = (ch - ph) / 2;
+    /* the UI scale: the HUD pieces' size; never beyond what makes the 640x480 mission screen fit */
+    double s = (double)cw / MW < (double)ch / MH ? (double)cw / MW : (double)ch / MH;
     double u = g_ui_halves ? g_ui_halves / 2.0 : s;
     if (u > s) u = s;
-    int right = (int)MEM32(ADDR_BLIT_RIGHT);
-    if (right < 1 || right > w) right = w - 16;
     int n = 0;
+    if (hires) {
+        /* step 4: the battlefield fills the window (src (0,21,Ww,Wh) of the frame), the HUD is drawn over it:
+         * the top strip across the window's top, the panel column anchored to the right edge */
+        rg[n].sx = 0, rg[n].sy = STRIP_Y, rg[n].sw = hv.ww, rg[n].sh = hv.wh;
+        if (!hv.capped) {
+            rg[n].dx = 0, rg[n].dy = 0, rg[n].dw = cw, rg[n].dh = ch;
+        } else {                        /* the view cannot cover the window: one uniform scale, centred */
+            double k = (double)cw / hv.ww < (double)ch / hv.wh ? (double)cw / hv.ww : (double)ch / hv.wh;
+            rg[n].dw = (int)(hv.ww * k + 0.5), rg[n].dh = (int)(hv.wh * k + 0.5);
+            rg[n].dx = (cw - rg[n].dw) / 2, rg[n].dy = (ch - rg[n].dh) / 2;
+        }
+        n++;
+        rg[n].sx = 0, rg[n].sy = 0, rg[n].sw = MW, rg[n].sh = STRIP_Y;
+        rg[n].dx = 0, rg[n].dy = 0, rg[n].dw = cw, rg[n].dh = (int)(STRIP_Y * u + 0.5);
+        n++;
+        int right = hv.hud_right;
+        if (right < 1 || right > hv.a - 1) right = hv.a - 16;
+        rg[n].sx = right, rg[n].sy = STRIP_Y, rg[n].sw = hv.a - right, rg[n].sh = MH - STRIP_Y;
+        rg[n].dw = (int)((hv.a - right) * u + 0.5), rg[n].dh = (int)((MH - STRIP_Y) * u + 0.5);
+        rg[n].dx = cw - rg[n].dw, rg[n].dy = (int)(STRIP_Y * u + 0.5);
+        n++;
+        return n;
+    }
+    int pw = (int)(MW * s + 0.5), ph = (int)(MH * s + 0.5);
+    int px = (cw - pw) / 2, py = (ch - ph) / 2;
+    int right = (int)MEM32(ADDR_BLIT_RIGHT);
+    if (right < 1 || right > MW) right = MW - 16;
     /* the battlefield, where it always was */
-    rg[n].sx = 0, rg[n].sy = 21, rg[n].sw = right, rg[n].sh = h - 21;
-    rg[n].dx = px, rg[n].dy = py + (int)(21 * s + 0.5);
+    rg[n].sx = 0, rg[n].sy = STRIP_Y, rg[n].sw = right, rg[n].sh = MH - STRIP_Y;
+    rg[n].dx = px, rg[n].dy = py + (int)(STRIP_Y * s + 0.5);
     rg[n].dw = (int)(right * s + 0.5), rg[n].dh = py + ph - rg[n].dy;
     n++;
     /* the top strip (the message/chat line): the full width of the window,
      * stretched sideways, at the UI scale's height (owner, 2026-10-26) */
-    rg[n].sx = 0, rg[n].sy = 0, rg[n].sw = w, rg[n].sh = 21;
-    rg[n].dx = 0, rg[n].dy = 0, rg[n].dw = cw, rg[n].dh = (int)(21 * u + 0.5);
+    rg[n].sx = 0, rg[n].sy = 0, rg[n].sw = MW, rg[n].sh = STRIP_Y;
+    rg[n].dx = 0, rg[n].dy = 0, rg[n].dw = cw, rg[n].dh = (int)(STRIP_Y * u + 0.5);
     n++;
     /* the panel and edge strip, anchored to the window's right edge, under the strip */
-    rg[n].sx = right, rg[n].sy = 21, rg[n].sw = w - right, rg[n].sh = h - 21;
-    rg[n].dw = (int)((w - right) * u + 0.5), rg[n].dh = (int)((h - 21) * u + 0.5);
-    rg[n].dx = cw - rg[n].dw, rg[n].dy = (int)(21 * u + 0.5);
+    rg[n].sx = right, rg[n].sy = STRIP_Y, rg[n].sw = MW - right, rg[n].sh = MH - STRIP_Y;
+    rg[n].dw = (int)((MW - right) * u + 0.5), rg[n].dh = (int)((MH - STRIP_Y) * u + 0.5);
+    rg[n].dx = cw - rg[n].dw, rg[n].dy = (int)(STRIP_Y * u + 0.5);
     n++;
     (void)px; (void)pw;
     return n;
 }
 
 /* ---------------------------------------------------------------- presenter */
+
+/* Test switch PLASTIC_DUMP_LOAD=<dir>: while the game is loading a mission (from the map load to the
+ * first panel update, hires.c), the presenter writes the frame it is about to show to
+ * <dir>\load_<n>_<w>x<h>_state<s>.bmp every 100 ms (at most 30 of them), to see what the loading
+ * screen looks like whatever the geometry. */
+static void dump_load_frame(const uint8_t* frame, int w, int h, const PALETTEENTRY* pal) {
+    static const char* dir = (const char*)1;
+    static int n;
+    static DWORD last;
+    if (dir == (const char*)1) dir = getenv("PLASTIC_DUMP_LOAD");
+    if (!dir || !*dir || n >= 30 || !hires_loading()) return;
+    DWORD now = GetTickCount();
+    if (n && now - last < 100) return;
+    last = now;
+    char path[MAX_PATH];
+    _snprintf(path, sizeof path - 1, "%s\\load_%02d_%dx%d_state%d.bmp", dir, n++, w, h, (int)MEM32(ADDR_GAME_STATE));
+    path[sizeof path - 1] = 0;
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    int rowb = (w + 3) & ~3;
+    BITMAPFILEHEADER fh = { 0x4D42, (DWORD)(14 + 40 + 1024 + rowb * h), 0, 0, 14 + 40 + 1024 };
+    BITMAPINFOHEADER ih = { sizeof ih, w, h, 1, 8, BI_RGB, (DWORD)(rowb * h), 0, 0, 256, 0 };
+    RGBQUAD q[256];
+    for (int i = 0; i < 256; i++) q[i].rgbRed = pal[i].peRed, q[i].rgbGreen = pal[i].peGreen, q[i].rgbBlue = pal[i].peBlue, q[i].rgbReserved = 0;
+    fwrite(&fh, 1, sizeof fh, f), fwrite(&ih, 1, sizeof ih, f), fwrite(q, 1, sizeof q, f);
+    uint8_t* row = (uint8_t*)calloc(1, (size_t)rowb);
+    for (int y = h - 1; y >= 0; y--) {
+        memcpy(row, frame + (size_t)y * w, (size_t)w);
+        fwrite(row, 1, (size_t)rowb, f);
+    }
+    free(row);
+    fclose(f);
+}
 
 /* Shows the primary about 60 times a second (present_frame waits for vsync). It
  * owns the D3D device, created here, on this thread only. The pixels are copied
@@ -708,6 +784,7 @@ static DWORD WINAPI presenter(LPVOID unused) {
             if (ms < 16.0) Sleep((DWORD)(16.0 - ms));
             QueryPerformanceCounter(&last);
         }
+        dump_load_frame(frame, w, h, pal);
         present_region_t rg[4];
         RECT rc;
         int n = GetClientRect(g_hwnd, &rc) ? layout(rc.right, rc.bottom, w, h, rg) : 0;
@@ -745,14 +822,33 @@ HWND vdd_window(void) { return g_hwnd; }
 
 /* The Windows cursor in frame pixels, through the presenter's letterbox mapping:
  * the mouse feed's target (mouse.c) when there is no cnc-ddraw to ask. */
-int vdd_cursor(POINT* p) {
-    POINT c;
-    if (!g_hwnd || !GetCursorPos(&c) || !ScreenToClient(g_hwnd, &c)) return 0;
+static int cursor_from_client(POINT c, POINT* p) {
     int fx = -1, fy = -1;
     present_window_to_frame(c.x, c.y, &fx, &fy);
     if (fx < 0 || fy < 0) return 0;     /* nothing presented yet */
     p->x = fx, p->y = fy;
+    /* Edge scroll (sub_00424CA0) acts on the game cursor within 3 px of its clamp rectangle, which in
+     * the hires frame is bigger than the world's picture: the window's border pixels stand for it. */
+    hires_view_t hv;
+    RECT rc;
+    if (hires_view(&hv) && GetClientRect(g_hwnd, &rc)) {
+        if (c.x <= 1) p->x = 0; else if (c.x >= rc.right - 2) p->x = hv.a - 1;
+        if (c.y <= 1) p->y = 0; else if (c.y >= rc.bottom - 2) p->y = hv.hc - 1;
+    }
     return 1;
+}
+
+int vdd_cursor(POINT* p) {
+    POINT c;
+    if (!g_hwnd || !GetCursorPos(&c) || !ScreenToClient(g_hwnd, &c)) return 0;
+    return cursor_from_client(c, p);
+}
+
+int vdd_cursor_at(int cx, int cy, POINT* p) {
+    RECT rc;
+    if (!g_hwnd || !GetClientRect(g_hwnd, &rc)) return 0;
+    POINT c = { cx < 0 ? rc.right + cx : cx, cy < 0 ? rc.bottom + cy : cy };
+    return cursor_from_client(c, p);
 }
 
 /* The big surfaces' logical size (the game's SCREEN_W/H world). Needs capacity: the primary and its

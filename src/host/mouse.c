@@ -24,6 +24,7 @@
 
 #include "native32.h"
 #include "mouse.h"
+#include "hires.h"
 
 #define ARG(n) MEM32(g_esp + 4 + 4 * (n))
 
@@ -146,12 +147,13 @@ static void game_cursor(int* x, int* y) {
  * on the next poll cycle) follows once the game's cursor has arrived.
  * PLASTIC_KEYS="t:KEY;..." holds a DirectInput key (a DIK number, decimal or 0x.., or ESC, ENTER,
  * SPACE) down for 3 keyboard polls from time t. Both are for diagnosis and scripted tests only. */
-typedef struct { double t; int x, y, click, fired; } script_ev_t;
+typedef struct { double t; int x, y, click, rclick, client, fired; } script_ev_t;
 typedef struct { double t; int dik, polls; } key_ev_t;
 static script_ev_t g_script[64];
 static key_ev_t g_keys[64];
 static int g_script_n, g_keys_n, g_script_init;
 static int g_script_cur = -1;               /* last entry reached */
+static DWORD g_click_ofs = DIMOFS_BUTTON0;   /* the button the script last pressed */
 static int g_click_wait, g_click_up;        /* cycles waited for the cursor / button up owed */
 
 static double host_seconds(void) {
@@ -193,9 +195,12 @@ static void script_init(void) {
             script_ev_t e = { 0 };
             int x, y;
             char* c = strchr(tok, ':');
-            if (!c || sscanf(c + 1, "%d,%d", &x, &y) != 2) continue;
+            if (!c) continue;
+            e.client = c[1] == '@';         /* "@x,y": a window client pixel (negative: from the right / bottom edge) */
+            if (sscanf(c + 1 + e.client, "%d,%d", &x, &y) != 2) continue;
             e.t = atof(tok), e.x = x, e.y = y;
-            e.click = strstr(c, "click") != NULL;
+            e.rclick = strstr(c, "rclick") != NULL;
+            e.click = e.rclick || strstr(c, "click") != NULL;
             g_script[g_script_n++] = e;
         }
         fprintf(stderr, "[script] PLASTIC_SCRIPT: %d step(s)\n", g_script_n);
@@ -227,6 +232,7 @@ static int script_target(POINT* t, int* click_now) {
     if (g_script_cur < 0) return 0;
     script_ev_t* e = &g_script[g_script_cur];
     t->x = e->x, t->y = e->y;
+    if (e->client && !(mouse_target_client && mouse_target_client(e->x, e->y, t))) return 0;
     if (e->click && !e->fired) *click_now = 1;
     return 1;
 }
@@ -243,6 +249,7 @@ static void inject_keys(void* data, DWORD cb) {
 }
 
 int (*mouse_target)(POINT* p);
+int (*mouse_target_client)(int cx, int cy, POINT* p);   /* the same mapping for a given client pixel */
 
 static void queue_motion(void) {
     POINT t;
@@ -250,7 +257,7 @@ static void queue_motion(void) {
     g_queued = g_head = 0;
     if (g_click_up) {                       /* the button goes up one cycle after it went down */
         g_click_up = 0;
-        g_queue[g_queued].ofs = DIMOFS_BUTTON0, g_queue[g_queued++].data = 0;
+        g_queue[g_queued].ofs = g_click_ofs, g_queue[g_queued++].data = 0;
     }
     scripted = script_target(&t, &click_now);
     if (!scripted) {
@@ -274,7 +281,8 @@ static void queue_motion(void) {
     if (scripted && click_now) {
         /* press once the game's cursor is on the target (or after 10 cycles, if it never gets there) */
         if ((!dx && !dy) || ++g_click_wait > 10) {
-            g_queue[g_queued].ofs = DIMOFS_BUTTON0, g_queue[g_queued++].data = 0x80;
+            g_click_ofs = g_script[g_script_cur].rclick ? DIMOFS_BUTTON1 : DIMOFS_BUTTON0;
+            g_queue[g_queued].ofs = g_click_ofs, g_queue[g_queued++].data = 0x80;
             g_script[g_script_cur].fired = 1;
             g_click_up = 1;
             fprintf(stderr, "[script] click at (%ld,%ld), game cursor was (%d,%d)\n", t.x, t.y, ax, ay);
@@ -293,6 +301,7 @@ static HRESULT feed_events(LPDIRECTINPUTDEVICEA self, DWORD cb, LPDIDEVICEOBJECT
     DWORD want = *inout, filled = 0;
     if (g_cycle_start) {
         g_cycle_start = 0;
+        hires_poll_state();             /* the game thread, between its frames: back to 640x480 after a mission */
         queue_motion();
     }
     while (filled < want) {
@@ -312,6 +321,7 @@ static HRESULT feed_events(LPDIRECTINPUTDEVICEA self, DWORD cb, LPDIDEVICEOBJECT
         if (FAILED(hr)) {
             if (filled) break;
             g_cycle_start = 1;
+            hires_poll_end();
             return hr;
         }
         if (!one) break;
@@ -320,7 +330,7 @@ static HRESULT feed_events(LPDIRECTINPUTDEVICEA self, DWORD cb, LPDIDEVICEOBJECT
         filled++;
     }
     *inout = filled;
-    if (!filled) g_cycle_start = 1;
+    if (!filled) { g_cycle_start = 1; hires_poll_end(); }
     return DI_OK;
 }
 

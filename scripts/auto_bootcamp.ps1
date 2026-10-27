@@ -21,6 +21,8 @@ paths, the host exit code and the [script]/[hires]/[ddraw] lines of the log.
 
   -Keys / -Script override the default PLASTIC_KEYS / PLASTIC_SCRIPT strings; -Env sets more
   environment variables (e.g. @{PLASTIC_ZOOM='2'}).
+  -Do runs window actions at given times, e.g. -Do '70:maximize','90:restore','100:size 1000 700',
+  '110:key OemPlus' (WM_KEYDOWN / WM_KEYUP posted to the game's window: it reaches the window procedure, not DirectInput). They need no extra -Shots entry.
 #>
 param(
     [string]$Tag = 'run',
@@ -33,6 +35,7 @@ param(
     [string]$Keys,
     [string]$Script,
     [hashtable]$Env = @{},
+    [string[]]$Do = @(),
     [string[]]$HostArgs = @()
 )
 $ShotTimes = @($Shots -split ',' | Where-Object { $_ } | ForEach-Object { [int]$_ } | Sort-Object)   # also fine from pwsh -File
@@ -65,11 +68,53 @@ foreach ($k in $vars.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $taken = @()
 
-foreach ($t in $ShotTimes) {
+if ($Do.Count -and -not ('AbWin' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class AbWin {
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h, uint msg, IntPtr wp, IntPtr lp);
+}
+'@
+}
+# the timeline: screenshots and -Do actions in time order
+$timeline = @($ShotTimes | ForEach-Object { [pscustomobject]@{ T = $_; Kind = 'shot'; Arg = '' } })
+foreach ($d in $Do) {
+    $c = $d.IndexOf(':')
+    $timeline += [pscustomobject]@{ T = [int]$d.Substring(0, $c); Kind = 'do'; Arg = $d.Substring($c + 1) }
+}
+$timeline = @($timeline | Sort-Object T)
+
+foreach ($ev in $timeline) {
+    $t = $ev.T
     if ($t -ge $Duration) { break }
     $wait = [math]::Max(0, [int](($t - $clock.Elapsed.TotalSeconds) * 1000))
     if ($p.WaitForExit($wait)) { Write-Host "auto_bootcamp[$Tag]: host exited early at $([int]$clock.Elapsed.TotalSeconds) s"; break }
-    $r = @(& (Join-Path $PSScriptRoot 'screenshot.ps1') -PassThru | Where-Object { $_.Path })
+    if ($ev.Kind -eq 'do') {
+        $w = Get-Process plasticrecomp -ErrorAction Ignore | Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero } | Select-Object -First 1
+        if (-not $w) { Write-Host "auto_bootcamp[$Tag]: t=$t s: '$($ev.Arg)': no window"; continue }
+        $h = $w.MainWindowHandle
+        $a = $ev.Arg -split ' '
+        switch ($a[0]) {
+            'maximize' { [AbWin]::ShowWindow($h, 3) | Out-Null }
+            'restore'  { [AbWin]::ShowWindow($h, 9) | Out-Null }
+            'size'     { [AbWin]::SetWindowPos($h, [IntPtr]::Zero, 0, 0, [int]$a[1], [int]$a[2], 0x16) | Out-Null }   # outer size; NOMOVE|NOZORDER|NOACTIVATE
+            'key'      {   # posted to the game's window (WM_KEYDOWN, WM_KEYUP), whatever has the focus: nothing is typed elsewhere
+                foreach ($k in $a[1..($a.Count - 1)]) {
+                    $vk = [int][Enum]::Parse([System.ConsoleKey], $k, $true)
+                    [AbWin]::PostMessage($h, 0x100, [IntPtr]$vk, [IntPtr]1) | Out-Null
+                    Start-Sleep -Milliseconds 80
+                    [AbWin]::PostMessage($h, 0x101, [IntPtr]$vk, [IntPtr]0xC0000001) | Out-Null
+                }
+            }
+            default    { Write-Host "auto_bootcamp[$Tag]: unknown -Do action '$($ev.Arg)'" }
+        }
+        Write-Host "auto_bootcamp[$Tag]: t=$t s: $($ev.Arg)"
+        continue
+    }
+    $r = @(& (Join-Path $PSScriptRoot 'screenshot.ps1') -PassThru 6>$null | Where-Object { $_.Path })
     if ($r.Count) {
         $dest = Join-Path $shotDir ("{0}_{1:D3}s.png" -f $Tag, $t)
         Copy-Item $r[0].Path $dest -Force

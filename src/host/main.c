@@ -190,6 +190,7 @@ static void shim_GetFocus(void) {
  * from one whose frames do not reach the screen (owner: movies freeze, the game
  * does not; 2026-10-26). */
 static int g_movie_log;
+static int g_hires_log;                 /* --hires-log (hires.c) */
 static volatile LONG g_smk_frames, g_smk_wait_go, g_smk_wait_hold;
 static FARPROC smk_fn(const char* name) {
     static HMODULE smk;
@@ -570,6 +571,7 @@ static DWORD WINAPI run(LPVOID unused) {
         /* no cnc-ddraw: the virtual DirectDraw's window and letterbox map the
          * mouse, and the mouse device must not be exclusive (mouse.c) */
         mouse_target = vdd_cursor;
+        mouse_target_client = vdd_cursor_at;
         mouse_nonexclusive = 1;
     }
     /* the game's cursor: int32 x, y, written only by sub_00426F40 */
@@ -592,6 +594,8 @@ static DWORD WINAPI run(LPVOID unused) {
     }
     if (g_watchdog_s) CloseHandle(CreateThread(NULL, 0, watchdog, NULL, 0, NULL));
     if (g_movie_log) CloseHandle(CreateThread(NULL, 0, movie_status, NULL, 0, NULL));
+    hires_init(g_hires_log);
+    if (g_cnc_ddraw) hires_disable();    /* the virtual surfaces' capacity is what the hires geometry needs */
     printf("  entering 0x%08X\n\n", AM2_ENTRY);
     fflush(stdout);
     native32_call_guest(AM2_ENTRY, 0, NULL);
@@ -616,6 +620,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--cnc-ddraw")) g_cnc_ddraw = 1;
         else if (!strcmp(argv[i], "--dd-trace")) vdd_trace = 1;
         else if (!strcmp(argv[i], "--movie-log")) g_movie_log = 1;
+        else if (!strcmp(argv[i], "--hires-log")) g_hires_log = 1;
         else if (!strcmp(argv[i], "--multicore")) g_multicore = 1;
         else if (!strcmp(argv[i], "--mouse-log")) mouse_log = 1;
         else if (!strcmp(argv[i], "--raw-mouse")) mouse_raw = 1;
@@ -624,7 +629,7 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--callbacks")) native32_trace_callbacks = 1;
         else {
             fprintf(stderr, "usage: %s [--game DIR] [--watchdog S] [--dry] [--imports] [--no-route] [--route-gdi] "
-                    "[--raw-mouse] [--mouse-log] [--native-trace] [--callbacks] | --dplay-check\n", argv[0]);
+                    "[--raw-mouse] [--mouse-log] [--hires-log] [--native-trace] [--callbacks] | --dplay-check\n", argv[0]);
             return 1;
         }
     }
