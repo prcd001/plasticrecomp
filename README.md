@@ -39,6 +39,11 @@ The code and documents in this repository (`src/host`, `scripts`, `docs`, the `.
 the MIT licence, see `LICENSE`. That covers this repository only: it grants nothing in Army Men II,
 which belongs to its rights holders, nor in pcrecomp or cnc-ddraw (both MIT, their own licences apply).
 
+## Get it
+
+On <https://github.com/prcd001/plasticrecomp> press **Code > Download ZIP** and unpack it into a folder you can write to
+(for example `C:\plasticrecomp`), or, if you use Git: `git clone https://github.com/prcd001/plasticrecomp`. Then read on.
+
 ## What you need
 
 - Windows 10 or 11, 64-bit. (Army Men II is a 32-bit program, so the lifted game and its host are built as 32-bit; Windows runs those out of the box, nothing to install.)
