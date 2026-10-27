@@ -155,6 +155,13 @@ Test switches (environment variables, for diagnosis only):
 - `PLASTIC_LOGICAL_PROBE=WxH`: once the game has made its world surface, set the primary, back buffer and
   world surface's logical size to W x H (within the capacity), to check that menus, movies and the HUD
   still show the 640x480 picture.
+- `PLASTIC_CAP=WxH`: pretend the largest monitor is W x H (capacity only: the surfaces are made for the battlefield that
+  monitor would allow, up to 3840x2160; the window keeps its size). `PLASTIC_VIEW=WxH`: size the battlefield as if the
+  window's client area were W x H (the presenter then scales it into the real window). Together they run a 4K view on any
+  PC: `PLASTIC_CAP=3840x2160 PLASTIC_VIEW=3840x2160`. `PLASTIC_DUMP_VIEW=dir`: F10 / PrintScreen also write the battlefield
+  as the game drew it, 1:1, to `dir\view_<n>_<w>x<h>.bmp` (a window cannot be bigger than the monitor, so this is how a 4K
+  view is looked at). `PLASTIC_LOG_DRAWOBJ=1`: log the first 200 `DrawMapObjects` calls (the region, its recursion level).
+  `PLASTIC_NO_DRAWFIX=1`: leave the game's own splitting of a crowded region as it is (see "Limits" in `docs/R_step4_plan.md`).
 - `PLASTIC_SCRIPT="t:x,y[,click];..."`: drives the game's cursor with no real mouse. From the first
   step whose time `t` (seconds since the host process started) has passed, the cursor target is game
   pixel x,y (the game's frame: 640x480 in menus; in a mission with the hires layout the frame is bigger, the

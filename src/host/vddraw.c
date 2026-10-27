@@ -122,6 +122,14 @@ static void compute_capacity(void) {
     int mm[2] = { 0, 0 };
     EnumDisplayMonitors(NULL, NULL, monitor_size, (LPARAM)mm);
     int mw = mm[0] > 0 ? mm[0] : GetSystemMetrics(SM_CXSCREEN), mh = mm[1] > 0 ? mm[1] : GetSystemMetrics(SM_CYSCREEN);
+    {   /* test switch PLASTIC_CAP=WxH: pretend the largest monitor is that big (capacity only: the window keeps its size) */
+        int cw, ch;
+        const char* e = getenv("PLASTIC_CAP");
+        if (e && sscanf(e, "%dx%d", &cw, &ch) == 2 && cw >= 640 && ch >= 480) {
+            fprintf(stderr, "[ddraw] PLASTIC_CAP: pretending the largest monitor is %dx%d\n", cw, ch);
+            mw = cw, mh = ch;
+        }
+    }
     int wmax = (mw < 3840 ? mw : 3840), hmax = (mh < 2160 ? mh : 2160);
     wmax = (wmax + 15) & ~15, hmax = (hmax + 15) & ~15;
     if (wmax < 640) wmax = 640;
@@ -538,6 +546,7 @@ static int g_show_fps;
 static char g_shot_dir[MAX_PATH] = "screenshots";   /* main.c sets <game folder>\screenshots: the game changes the working folder */
 void vdd_set_screenshot_dir(const char* dir) { strncpy(g_shot_dir, dir, MAX_PATH - 1); g_shot_dir[MAX_PATH - 1] = 0; }
 static char g_fps_text[96];
+static volatile LONG g_dump_req;        /* F10 with PLASTIC_DUMP_VIEW set: the presenter also writes the raw view (below) */
 volatile LONG vdd_present_us_max;       /* the longest gap between two presents, microseconds (reset when read) */
 static int g_fullscreen, g_fs_wanted;
 static WINDOWPLACEMENT g_wp;
@@ -649,7 +658,7 @@ static void update_confine(void) {
 /* The host's own keys. Returns 1 when the message is taken. */
 static int host_key(UINT msg, WPARAM wp, LPARAM lp) {
     int rep = (lp & 0x40000000) != 0;
-    if (msg == WM_KEYUP && wp == VK_SNAPSHOT) { present_request_screenshot(g_shot_dir); return 1; }
+    if (msg == WM_KEYUP && wp == VK_SNAPSHOT) { present_request_screenshot(g_shot_dir); InterlockedExchange(&g_dump_req, 1); return 1; }
     if (msg != WM_KEYDOWN && msg != WM_SYSKEYDOWN) return 0;
     if (wp == VK_F12) {
         if (!rep) notice("Scaling: %s", present_mode_name(present_cycle_mode((GetKeyState(VK_SHIFT) & 0x8000) ? -1 : 1)));
@@ -664,7 +673,7 @@ static int host_key(UINT msg, WPARAM wp, LPARAM lp) {
         return 1;
     }
     if (wp == VK_F10) {
-        if (!rep) present_request_screenshot(g_shot_dir);
+        if (!rep) { present_request_screenshot(g_shot_dir); InterlockedExchange(&g_dump_req, 1); }
         return 1;
     }
     if (wp == VK_F8) {
@@ -928,6 +937,36 @@ static void dump_load_frame(const uint8_t* frame, int w, int h, const PALETTEENT
     fclose(f);
 }
 
+/* Test switch PLASTIC_DUMP_VIEW=<dir>: F10 (and PrintScreen) also write the battlefield as the game drew it, one
+ * pixel per game pixel with no scaling, to <dir>\view_<n>_<w>x<h>.bmp (8-bit, with the palette of that moment), to
+ * look for objects the game did not draw (the depth list's 500 nodes) at a view the window cannot show whole. */
+static void dump_view(const uint8_t* frame, int fw, int fh, const PALETTEENTRY* pal) {
+    static int n;
+    const char* dir = getenv("PLASTIC_DUMP_VIEW");
+    hires_view_t hv;
+    if (!dir || !*dir || !InterlockedExchange(&g_dump_req, 0) || !hires_view(&hv) || hv.dialog || hv.a != fw || hv.hc != fh) return;
+    int x0 = 0, y0 = STRIP_Y, w = hv.ww, h = hv.wh;
+    char path[MAX_PATH];
+    _snprintf(path, sizeof path - 1, "%s\\view_%02d_%dx%d.bmp", dir, n++, w, h);
+    path[sizeof path - 1] = 0;
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    int rowb = (w + 3) & ~3;
+    BITMAPFILEHEADER fhd = { 0x4D42, (DWORD)(14 + 40 + 1024 + rowb * h), 0, 0, 14 + 40 + 1024 };
+    BITMAPINFOHEADER ih = { sizeof ih, w, h, 1, 8, BI_RGB, (DWORD)(rowb * h), 0, 0, 256, 0 };
+    RGBQUAD q[256];
+    for (int i = 0; i < 256; i++) q[i].rgbRed = pal[i].peRed, q[i].rgbGreen = pal[i].peGreen, q[i].rgbBlue = pal[i].peBlue, q[i].rgbReserved = 0;
+    fwrite(&fhd, 1, sizeof fhd, f), fwrite(&ih, 1, sizeof ih, f), fwrite(q, 1, sizeof q, f);
+    uint8_t* row = (uint8_t*)calloc(1, (size_t)rowb);
+    for (int y = h - 1; y >= 0; y--) {
+        memcpy(row, frame + (size_t)(y0 + y) * fw + x0, (size_t)w);
+        fwrite(row, 1, (size_t)rowb, f);
+    }
+    free(row);
+    fclose(f);
+    fprintf(stderr, "[host] view dump %s\n", path);
+}
+
 /* Shows the primary about 60 times a second (present_frame waits for vsync). It
  * owns the D3D device, created here, on this thread only. The pixels are copied
  * under the lock, so a Flip never happens halfway through a copy. */
@@ -985,6 +1024,7 @@ static DWORD WINAPI presenter(LPVOID unused) {
             QueryPerformanceCounter(&last);
         }
         dump_load_frame(frame, w, h, pal);
+        if (g_dump_req) dump_view(frame, w, h, pal);
         present_region_t rg[4];
         RECT rc;
         int n = GetClientRect(g_hwnd, &rc) ? layout(rc.right, rc.bottom, w, h, rg) : 0;

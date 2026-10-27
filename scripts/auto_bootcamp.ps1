@@ -23,7 +23,7 @@ paths, the host exit code and the [script]/[hires]/[ddraw] lines of the log.
   environment variables (e.g. @{PLASTIC_ZOOM='2'}).
   -Do runs window actions at given times, e.g. -Do '70:maximize','90:restore','100:size 1000 700',
   '110:key OemPlus', '105:syskey Enter', '108:close', '60:focus' / '60:unfocus' (the game / the desktop to the foreground), '61:clip' (print the cursor
-  clip rectangle, the client rect and the real cursor), '62:warp 100 200' (move the real cursor to a client pixel; negative: from the right / bottom) (WM_KEYDOWN / WM_KEYUP posted to the game's window: it reaches the window procedure, not DirectInput). They need no extra -Shots entry.
+  clip rectangle, the client rect and the real cursor), '62:client 3840 2160' (the client area's size), '62:warp 100 200' (move the real cursor to a client pixel; negative: from the right / bottom) (WM_KEYDOWN / WM_KEYUP posted to the game's window: it reaches the window procedure, not DirectInput). They need no extra -Shots entry.
 #>
 param(
     [string]$Tag = 'run',
@@ -96,6 +96,13 @@ public static class AbWin {
         PT p; GetCursorPos(out p);
         return string.Format("clip {0},{1}-{2},{3}  client at {4},{5} size {6}x{7}  cursor {8},{9}  foreground={10}", c.L, c.T, c.R, c.B, a.X, a.Y, cl.R, cl.B, p.X, p.Y, GetForegroundWindow() == h);
     }
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    // outer size so that the client area is cw x ch (physical pixels: needs SetProcessDPIAware)
+    public static void SizeClient(IntPtr h, int cw, int ch) {
+        RECT w, c; GetWindowRect(h, out w); GetClientRect(h, out c);
+        SetWindowPos(h, IntPtr.Zero, 0, 0, (w.R - w.L) - c.R + cw, (w.B - w.T) - c.B + ch, 0x16);
+    }
     public static void Unfocus() { SetForegroundWindow(GetShellWindow()); }
     public static void Focus(IntPtr h) { SetForegroundWindow(h); }   // (an Alt tap to unlock this would open the game window's system menu and block it)
     public static void Warp(IntPtr h, int cx, int cy) {   // client pixel (negative: from the right / bottom edge)
@@ -105,6 +112,7 @@ public static class AbWin {
 }
 '@
 }
+if ($Do.Count) { [void][AbWin]::SetProcessDPIAware() }   # physical pixels, as the host's window (so 'size' and 'clip' agree with it)
 # the timeline: screenshots and -Do actions in time order
 $timeline = @($ShotTimes | ForEach-Object { [pscustomobject]@{ T = $_; Kind = 'shot'; Arg = '' } })
 foreach ($d in $Do) {
@@ -145,6 +153,7 @@ foreach ($ev in $timeline) {
             }
             'clip'     { Write-Host ("auto_bootcamp[$Tag]: t=$t s: " + [AbWin]::Clip($h)) }
             'focus'    { [AbWin]::Focus($h) }
+            'client'   { [AbWin]::SizeClient($h, [int]$a[1], [int]$a[2]) }   # client area WxH, e.g. 'client 3840 2160'
             'unfocus'  { [AbWin]::Unfocus() }
             'warp'     { [AbWin]::Warp($h, [int]$a[1], [int]$a[2]) }
             'close'    { [AbWin]::PostMessage($h, 0x10, [IntPtr]0, [IntPtr]0) | Out-Null }   # WM_CLOSE: the game exits through ExitProcess (the ini is written)

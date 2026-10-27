@@ -24,6 +24,11 @@
  *   0x00424CA0  edge scroll                                                                  clip
  *   0x00424AD0  state change request (arg: the new state), M4: leaving the mission
  *   0x004260C0  the state-2 (mission) frame's dispatch: the mission's modal screens, see "dialogs" below
+ *   0x004609D0, 0x00460CA0, 0x00460FD0  the evictors of row pool A (decals, cap 450), row pool B (troopers, vehicles,
+ *               roaches, cap 90) and of a SEQ context (flames and other effect records): counted, for the limits
+ *               measurement (milestone 7) in --hires-log
+ *   0x0041DCE0  empties the dirty-rectangle list (500 records): its fill is read before it goes
+ *   0x0041E440  DrawMapObjects, which fills the depth list (500 nodes): its fill is read after it
  * and, from the mouse poll, M4: back to 640x480 geometry when the mission is over.
  *
  * The geometry (the game's "screen" is the battlefield view; the HUD sits in its own column):
@@ -94,8 +99,24 @@ static int g_hud_right;
 static int g_geo, g_vw, g_vh;           /* game thread: the hires geometry is applied; the view in game pixels */
 static int g_applied_zoom = -1, g_applied_cw, g_applied_ch;
 static int g_non_mission_polls;
+static int g_force_w, g_force_h;        /* PLASTIC_VIEW=WxH: the view is sized as if the window's client area were that (test) */
 /* timing, game thread writes, log thread reads */
 static volatile LONG g_loops;
+
+/* The limits (docs/R_hires.md section 3b; the caps are the original's, sized for a 640x480 view): all
+ * counters restart with each map load. Peaks are what the game thread saw at the call that matters. */
+#define ADDR_POOL_A     0x00662938u     /* row pool A: count (decals and seq step 0), cap 450 + budget 50 */
+#define ADDR_POOL_B     0x006640C8u     /* row pool B: count (troopers, vehicles, roaches), cap 90 + budget 10 */
+#define ADDR_DEPTH_CNT  0x0050B1D4u     /* depth list fill, 0..500 */
+#define ADDR_DIRTY_TAIL 0x00508AC0u     /* dirty list: index of the last record, 0..499 (500 and over: a full redraw) */
+#define ADDR_OBJ_CAP    0x00514F00u     /* the object table: capacity and count */
+#define ADDR_OBJ_COUNT  0x00514F04u
+static struct {
+    volatile LONG a_calls, a_dropped, a_peak, b_calls, b_dropped, b_peak, seq_calls, seq_dropped, seq_peak;
+    volatile LONG depth_peak, depth_full, depth_calls, depth_splits, dirty_peak, dirty_full, dirty_resets;
+} g_lim;
+static void lim_reset(void) { memset((void*)&g_lim, 0, sizeof g_lim); }
+static void peak(volatile LONG* p, LONG v) { if (v > *p) *p = v; }
 
 static void first_hit(volatile LONG* flag, const char* what) {
     if (!InterlockedExchange(flag, 1)) fprintf(stderr, "[hires] %s first entered\n", what);
@@ -133,6 +154,13 @@ static DWORD WINAPI log_thread(LPVOID unused) {
                 mx / 1000.0, n / 2.0, (long)((lp - last_loops) / 2), (pres - last_pres) / 2.0,
                 (int)(int16_t)MEM16(ADDR_EYE), (int)(int16_t)MEM16(ADDR_EYE + 2), MEM32(ADDR_EYE), MEM32(ADDR_EYE + 4),
                 (int)MEM32(ADDR_STATE), (int)MEM32(0x00511DBCu), (int)MEM32(0x00511DC0u));
+        if (MEM32(ADDR_STATE) == STATE_MISSION)
+            fprintf(stderr, "[hires-log] limits: pool A %d (peak %ld, cap 450; evictions %ld calls, %ld dropped) "
+                    "pool B %d (peak %ld, cap 90; %ld calls, %ld dropped) seq evict %ld calls, %ld dropped (peak fill %ld) "
+                    "depth peak %ld/500 (full %ld of %ld; %ld splits) dirty peak %ld/500 (full %ld of %ld frames) objects %d/%d\n",
+                    (int)MEM32(ADDR_POOL_A), g_lim.a_peak, g_lim.a_calls, g_lim.a_dropped, (int)MEM32(ADDR_POOL_B), g_lim.b_peak,
+                    g_lim.b_calls, g_lim.b_dropped, g_lim.seq_calls, g_lim.seq_dropped, g_lim.seq_peak, g_lim.depth_peak, g_lim.depth_full,
+                    g_lim.depth_calls, g_lim.depth_splits, g_lim.dirty_peak, g_lim.dirty_full, g_lim.dirty_resets, (int)MEM32(ADDR_OBJ_COUNT), (int)MEM32(ADDR_OBJ_CAP));
         last_pres = pres, last_frames = fr, last_loops = lp;
     }
 }
@@ -146,8 +174,11 @@ void hires_init(int log) {
         g_zoom_want = z < 0 ? 0 : z >= N_ZOOM ? N_ZOOM - 1 : z;
     }
     g_log = log;
+    e = getenv("PLASTIC_VIEW");
+    if (e && sscanf(e, "%dx%d", &g_force_w, &g_force_h) != 2) g_force_w = g_force_h = 0;
     lock(); unlock();
     if (g_log) CloseHandle(CreateThread(NULL, 0, log_thread, NULL, 0, NULL));
+    if (g_force_w) fprintf(stderr, "[hires] PLASTIC_VIEW: the view is sized for a %dx%d window\n", g_force_w, g_force_h);
     fprintf(stderr, "[hires] %s (PLASTIC_HIRES=%s), first zoom index %ld\n", g_enabled ? "enabled" : "disabled",
             getenv("PLASTIC_HIRES") ? getenv("PLASTIC_HIRES") : "unset", g_zoom_want);
 }
@@ -248,6 +279,7 @@ void sub_0042C440(void) {
     static volatile LONG seen;
     first_hit(&seen, "map load 0x0042C440");
     g_loading = 1;
+    lim_reset();
     InterlockedIncrement(&g_mission_serial);
     g_map_hires = 0;
     if (g_enabled) {
@@ -434,7 +466,8 @@ static void panel_update(void) {
         RECT rc = { 0, 0, 0, 0 };
         HWND w = vdd_window();
         int zi = (int)g_zoom_want;
-        if (w && GetClientRect(w, &rc) && rc.right > 0 && rc.bottom > 0 &&
+        if (w && GetClientRect(w, &rc) && rc.right > 0 && rc.bottom > 0 && g_force_w > 0) rc.right = g_force_w, rc.bottom = g_force_h;
+        if (w && rc.right > 0 && rc.bottom > 0 &&
             (!g_active || zi != g_applied_zoom || rc.right != g_applied_cw || rc.bottom != g_applied_ch))
             apply_geometry(rc.right, rc.bottom, zi);
         else if (!g_active)
@@ -459,6 +492,99 @@ static void panel_update(void) {
     }
 }
 
+/* ------------------------------------------------------------------- limits (counters only) */
+
+void sub_004609D0(void) {                                  /* RowPoolAEvict */
+    LONG b = (LONG)MEM32(ADDR_POOL_A);
+    sub_004609D0_lifted();
+    InterlockedIncrement(&g_lim.a_calls);
+    peak(&g_lim.a_peak, b);
+    if (b > (LONG)MEM32(ADDR_POOL_A)) InterlockedExchangeAdd(&g_lim.a_dropped, b - (LONG)MEM32(ADDR_POOL_A));
+}
+
+void sub_00460CA0(void) {                                  /* RowPoolBEvict */
+    LONG b = (LONG)MEM32(ADDR_POOL_B);
+    sub_00460CA0_lifted();
+    InterlockedIncrement(&g_lim.b_calls);
+    peak(&g_lim.b_peak, b);
+    if (b > (LONG)MEM32(ADDR_POOL_B)) InterlockedExchangeAdd(&g_lim.b_dropped, b - (LONG)MEM32(ADDR_POOL_B));
+}
+
+void sub_00460FD0(void) {                                  /* SeqEvict(ctx): ctx->count is its first dword */
+    uint32_t ctx = MEM32(g_esp + 4);
+    LONG b = (LONG)MEM32(ctx);
+    sub_00460FD0_lifted();
+    InterlockedIncrement(&g_lim.seq_calls);
+    peak(&g_lim.seq_peak, b);
+    if (b > (LONG)MEM32(ctx)) InterlockedExchangeAdd(&g_lim.seq_dropped, b - (LONG)MEM32(ctx));
+}
+
+void sub_0041DCE0(void) {                                  /* ResetDirtyList */
+    LONG t = (LONG)(MEM32(ADDR_DIRTY_TAIL) & 0xFFFF);
+    InterlockedIncrement(&g_lim.dirty_resets);
+    peak(&g_lim.dirty_peak, t);
+    if (t >= 499) InterlockedIncrement(&g_lim.dirty_full);
+    sub_0041DCE0_lifted();
+}
+
+/* DrawMapObjects(world rect *, map desc *, deep) collects the objects of a region into the depth list, which holds
+ * 500, and draws them. When the list overflows it splits the region in two along the longer side and calls itself
+ * on the halves (docs/R_step4_plan.md: nothing at the original's 640x480 view reaches this; a view of ~2500x1400
+ * and up does). Two things in it are wrong at the sizes the hires view makes:
+ *  - the VERTICAL split (a region wider than tall) never stores the second half's bottom, so the right half gets
+ *    whatever lay on the stack (seen: 8759320): the half then reaches down the whole map, takes the first 500
+ *    objects of that column and drops the rest, and sprites are cut at the split line;
+ *  - every split of a region wider than 32 passes deep = 1 to its halves, which then never split again but drop
+ *    what does not fit, so a redraw holds at most 2 x 500 objects.
+ * The calls to itself go through this wrapper (the lift renamed the body), so a nested call's arguments are
+ * repaired here, in guest memory, before the body reads them: every half is clamped into its parent's rectangle,
+ * and a half bigger than 64 px either way gets deep = 0, i.e. may split again; and the second half, which starts at
+ * the first half's right (bottom) + 1 although the right (bottom) edge is exclusive, starts there instead (the
+ * 1 px line along the split, through every sprite on it). Not done for the outermost call, so
+ * a view that fits (the original's behaviour) is untouched. PLASTIC_NO_DRAWFIX=1 turns the repair off (test). */
+static int g_dm_depth;
+static int g_dm_rect[32][4];            /* the rectangle each level of the recursion is working on */
+static int g_dm_sib[33][4], g_dm_sib_ok[33];   /* the last finished sibling at each level, to close the 1 px gap between halves */
+void sub_0041E440(void) {
+    static int log_calls = -1, fix = -1;
+    uint32_t wr = MEM32(g_esp + 4);
+    if (log_calls < 0) log_calls = getenv("PLASTIC_LOG_DRAWOBJ") ? 0 : 1000000;
+    if (fix < 0) fix = !getenv("PLASTIC_NO_DRAWFIX");
+    int l = (int)MEM32(wr), t = (int)MEM32(wr + 4), r = (int)MEM32(wr + 8), b = (int)MEM32(wr + 12), deep = (int)MEM32(g_esp + 12);
+    int d = g_dm_depth, logit = log_calls < 200 && (int)MEM32(ADDR_STATE) == STATE_MISSION;
+    if (d > 0 && d < 32) {
+        InterlockedIncrement(&g_lim.depth_splits);
+        if (fix) {
+            const int* pr = g_dm_rect[d - 1];
+            int nl = l < pr[0] ? pr[0] : l, nt = t < pr[1] ? pr[1] : t, nr = r > pr[2] ? pr[2] : r, nb = b > pr[3] ? pr[3] : b;
+            if (logit && (nl != l || nt != t || nr != r || nb != b))
+                fprintf(stderr, "[drawobj] half %d,%d-%d,%d clamped to %d,%d-%d,%d\n", l, t, r, b, nl, nt, nr, nb);
+            if (nl != l) MEM32(wr) = (uint32_t)nl;
+            if (nt != t) MEM32(wr + 4) = (uint32_t)nt;
+            if (nr != r) MEM32(wr + 8) = (uint32_t)nr;
+            if (nb != b) MEM32(wr + 12) = (uint32_t)nb;
+            l = nl, t = nt, r = nr, b = nb;
+            if (g_dm_sib_ok[d]) {                /* the second half: no gap after the first */
+                const int* sb = g_dm_sib[d];
+                if (l == sb[2] + 1 && t == sb[1] && b == sb[3]) l = sb[2], MEM32(wr) = (uint32_t)l;
+                else if (t == sb[3] + 1 && l == sb[0] && r == sb[2]) t = sb[3], MEM32(wr + 4) = (uint32_t)t;
+            }
+            if (deep && (r - l > 64 || b - t > 64)) MEM32(g_esp + 12) = 0, deep = 0;
+        }
+    }
+    if (d < 32) g_dm_rect[d][0] = l, g_dm_rect[d][1] = t, g_dm_rect[d][2] = r, g_dm_rect[d][3] = b;
+    if (d < 32) g_dm_sib_ok[d + 1] = 0;          /* a new parent: its halves start afresh */
+    g_dm_depth = d + 1;
+    sub_0041E440_lifted();
+    g_dm_depth = d;
+    if (d < 32) memcpy(g_dm_sib[d], g_dm_rect[d], sizeof g_dm_sib[d]), g_dm_sib_ok[d] = 1;
+    LONG n = (LONG)MEM32(ADDR_DEPTH_CNT);
+    if (logit) { log_calls++; fprintf(stderr, "[drawobj] depth %d world %d,%d-%d,%d (%dx%d) deep %d -> list %ld\n", d, l, t, r, b, r - l, b - t, deep, (long)n); }
+    InterlockedIncrement(&g_lim.depth_calls);
+    peak(&g_lim.depth_peak, n);
+    if (n >= 500) InterlockedIncrement(&g_lim.depth_full);
+}
+
 static uint32_t g_split_lo = 0xFFFFFFFFu, g_split_hi;
 static volatile LONG g_split_ready;
 
@@ -479,6 +605,11 @@ hires_fn hires_lookup(uint32_t va) {
     case 0x00424CA0u: return sub_00424CA0;
     case 0x00424AD0u: return sub_00424AD0;
     case 0x004260C0u: return sub_004260C0;
+    case 0x004609D0u: return sub_004609D0;
+    case 0x00460CA0u: return sub_00460CA0;
+    case 0x00460FD0u: return sub_00460FD0;
+    case 0x0041DCE0u: return sub_0041DCE0;
+    case 0x0041E440u: return sub_0041E440;
     case 0x004193C0u: return panel_update;
     default: break;
     }

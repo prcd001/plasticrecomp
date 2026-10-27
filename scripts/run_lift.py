@@ -117,8 +117,11 @@ def table_arms(image, base, func):
 
 # Functions the host wraps by name (src/host/hires.c): each definition is renamed sub_X_lifted.
 #   0x0042C440 map load, 0x00413480 HUD create, 0x004143A0 HudPaint, 0x00412FE0 cursor draw,
-#   0x00424CA0 edge scroll, 0x00424AD0 state change request, 0x004260C0 the state-2 (mission) frame's dispatch
-WRAP = (0x0042C440, 0x00413480, 0x004143A0, 0x00412FE0, 0x00424CA0, 0x00424AD0, 0x004260C0)
+#   0x00424CA0 edge scroll, 0x00424AD0 state change request, 0x004260C0 the state-2 (mission) frame's dispatch,
+#   0x004609D0 / 0x00460CA0 / 0x00460FD0 the row pool A / row pool B / SEQ evictors (counted), 0x0041DCE0 the dirty
+#   list's reset (its fill read), 0x0041E440 DrawMapObjects (the depth list's fill read after it)
+WRAP = (0x0042C440, 0x00413480, 0x004143A0, 0x00412FE0, 0x00424CA0, 0x00424AD0, 0x004260C0,
+        0x004609D0, 0x00460CA0, 0x00460FD0, 0x0041DCE0, 0x0041E440)
 
 
 def wrap_pass(out_dir, wrap=WRAP):
