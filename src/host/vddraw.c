@@ -640,7 +640,8 @@ static LRESULT CALLBACK keep_active(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (host_key(msg, wp, lp)) { update_title(); return 0; }
     if (msg == WM_KEYDOWN && (wp == VK_OEM_PLUS || wp == VK_ADD || wp == VK_OEM_MINUS || wp == VK_SUBTRACT)) {
         int dir = (wp == VK_OEM_PLUS || wp == VK_ADD) ? +1 : -1;
-        if (GetKeyState(VK_SHIFT) & 0x8000) ui_step(dir);             /* the HUD's scale */
+        if (!hires_zoom_keys_ok()) { /* typing in a text field, or a dialog: not ours */ }
+        else if (GetKeyState(VK_SHIFT) & 0x8000) ui_step(dir);        /* the HUD's scale */
         else if (!(lp & 0x40000000)) hires_zoom_step(dir);            /* the battlefield's zoom (not on auto-repeat) */
     }
     if (msg == WM_ACTIVATEAPP && !wp) return 0;

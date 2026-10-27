@@ -39,6 +39,10 @@ int hires_loading(void);
 /* Counts the mission map loads so far (test scripts' state clock, mouse.c). */
 int hires_mission_serial(void);
 
+/* Nonzero when Plus / Minus (and Shift+Plus / Minus) belong to the host: no text field has the focus and no
+ * mission dialog is up. Also tells mouse.c which keys to hide from the game's keyboard. */
+int hires_zoom_keys_ok(void);
+
 /* Zoom one step along {1, 1.5, 2, 3, 4} (dir +1 zooms in). Applied at the next panel update. */
 void hires_zoom_step(int dir);
 

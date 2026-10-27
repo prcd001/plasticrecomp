@@ -167,6 +167,13 @@ int hires_view(hires_view_t* v) {
     return act;                         /* restore_640 decides when the geometry ends (state requests, the mouse poll) */
 }
 
+/* Plus / Minus (and Shift+Plus / Minus) are the host's unless the game has a text field in focus (its WM_CHAR
+ * consumer, 0x005125B8, is set: chat, the name and save-game fields) or one of the mission's dialogs is up (the
+ * Controls screen can then bind them). */
+int hires_zoom_keys_ok(void) {
+    return !g_dialog && !MEM32(0x005125B8u);
+}
+
 void hires_zoom_step(int dir) {
     LONG cur = g_zoom_want, n = cur + dir;
     if (n < 0) n = 0;

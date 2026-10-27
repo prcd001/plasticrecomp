@@ -148,7 +148,7 @@ static void game_cursor(int* x, int* y) {
  * PLASTIC_KEYS="t:KEY;..." holds a DirectInput key (a DIK number, decimal or 0x.., or ESC, ENTER,
  * SPACE) down for 3 keyboard polls from time t. Both are for diagnosis and scripted tests only. */
 typedef struct { double t; int st; int x, y, click, rclick, client, fired; } script_ev_t;
-typedef struct { double t; int st; int dik, polls; } key_ev_t;
+typedef struct { double t; int st; int dik, polls, pre; } key_ev_t;
 static script_ev_t g_script[64];
 static key_ev_t g_keys[64];
 static int g_script_n, g_keys_n, g_script_init;
@@ -218,6 +218,8 @@ static int dik_by_name(const char* s) {
     static const struct { const char* n; int d; } names[] = {
         { "ESC", 1 }, { "ESCAPE", 1 }, { "ENTER", 0x1C }, { "RETURN", 0x1C }, { "SPACE", 0x39 },
         { "MINUS", 0x0C }, { "EQUALS", 0x0D }, { "PLUS", 0x0D }, { "F1", 0x3B }, { "P", 0x19 },
+        { "F3", 0x3D }, { "F8", 0x42 }, { "F10", 0x44 }, { "F11", 0x57 }, { "F12", 0x58 }, { "PRTSC", 0xB7 },
+        { "ALT", 0x38 }, { "PLUSNP", 0x4E }, { "MINUSNP", 0x4A },
         { "ZOOMIN", 0xF0 }, { "ZOOMOUT", 0xF1 },     /* not keys: the battlefield zoom, as the window's Plus / Minus */
     };
     for (size_t i = 0; i < sizeof names / sizeof *names; i++)
@@ -252,7 +254,8 @@ static void script_init(void) {
         for (char* tok = strtok(buf, ";"); tok && g_keys_n < 64; tok = strtok(NULL, ";")) {
             char* c = strchr(tok, ':');
             if (!c) continue;
-            key_ev_t k = { 0, -1, dik_by_name(c + 1), 3 };
+            key_ev_t k = { 0, -1, 0, 3, c[1] == '!' };       /* "!KEY": pressed before the host's keys are hidden (a swallow test) */
+            k.dik = dik_by_name(c + 1 + k.pre);
             k.t = parse_time(tok, &k.st);
             if (k.dik > 0 && k.dik < 256) g_keys[g_keys_n++] = k;
         }
@@ -281,13 +284,36 @@ static int script_target(POINT* t, int* click_now) {
     return 1;
 }
 
+/* The host's own keys never reach the game's keyboard state. The game reads DirectInput's state array
+ * (sub_00427450 and friends test DIK 1, 2..9, 0x0F, 0x1C, 0x1D, 0x2A, 0x36, 0x39, 0x3B, 0xC8, 0xD0, and the
+ * Options.cfg bindings, which the Controls screen lets the player pick from any key), so a key the host
+ * acts on is cleared from it: F3 (FPS), F8 (mouse confine), F10 and PrintScreen (screenshot), F11 and Alt+Enter
+ * (fullscreen; Alt itself is the game's WALK key and stays), F12 (scaling mode) always; Plus and Minus,
+ * main row and numpad (zoom, HUD scale), unless a text field has the focus or a dialog is up, where the
+ * Controls screen can bind them (hires_zoom_keys_ok). Shipped bindings use none of these. */
+static void swallow_host_keys(BYTE* k) {
+    static const BYTE host[] = { 0x3D, 0x42, 0x44, 0x57, 0x58, 0x54, 0xB7 };
+    for (size_t i = 0; i < sizeof host; i++) k[host[i]] = 0;
+    if ((k[0x38] | k[0xB8]) & 0x80) k[0x1C] = k[0x9C] = 0;
+    if (hires_zoom_keys_ok()) k[0x0C] = k[0x0D] = k[0x4A] = k[0x4E] = 0;
+}
+
 static void inject_keys(void* data, DWORD cb) {
     script_init();
     if (cb != 256) return;
     double now = host_seconds();
     states_poll();
+    for (int i = 0; i < g_keys_n; i++)          /* pressed "on the hardware": the host's keys must not get through */
+        if (g_keys[i].pre && ev_time(g_keys[i].t, g_keys[i].st) <= now && g_keys[i].polls > 0) ((BYTE*)data)[g_keys[i].dik] |= 0x80;
+    swallow_host_keys((BYTE*)data);
     for (int i = 0; i < g_keys_n; i++) {
         if (ev_time(g_keys[i].t, g_keys[i].st) > now || g_keys[i].polls <= 0) continue;
+        if (g_keys[i].pre) {
+            if (--g_keys[i].polls == 2)
+                fprintf(stderr, "[script] %.1f s: hardware key DIK 0x%02X: the game sees it %s\n", now, g_keys[i].dik,
+                        ((BYTE*)data)[g_keys[i].dik] & 0x80 ? "DOWN (not swallowed)" : "up (swallowed)");
+            continue;
+        }
         if (g_keys[i].dik == 0xF0 || g_keys[i].dik == 0xF1) {    /* ZOOMIN / ZOOMOUT: once, nothing for the game */
             if (g_keys[i].polls == 3) {
                 fprintf(stderr, "[script] %.1f s: zoom %s\n", now, g_keys[i].dik == 0xF0 ? "in" : "out");

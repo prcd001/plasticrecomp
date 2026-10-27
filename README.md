@@ -84,6 +84,15 @@ cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > 
 | F3 | FPS readout in the title bar: presenter fps, frame time (average, max) and the game loop's rate. (Borderless fullscreen has no title bar, so the notices and this line are not visible there) |
 | F10, PrintScreen | screenshot: a PNG of the picture as presented (palette lookup and scaling done, window-sized) in `game\screenshots\plastic_<date>_<time>.png`; the title bar names the file |
 
+The host's keys never reach the game: they are cleared from the DirectInput keyboard state the game reads
+(`src/host/mouse.c`, `swallow_host_keys`). The game's own keys are DIK 1 (Escape), 2..9, 0x0F (Tab), 0x1C
+(Enter), 0x1D, 0x2A, 0x36, 0x39 (Space), 0x3B (F1), the arrows, and the bindings in `game\Options.cfg`
+(shipped: W S A D Q E C F, Alt, Space, Shift, Tab, ` X, R G T Y H, Backspace, F1, Esc; the Controls screen lets
+the player rebind). No shipped binding or fixed key collides with F3, F8, F10, F11, F12, PrintScreen, Plus or
+Minus, so nothing is lost, but those keys cannot be bound in the Controls screen. Alt+Enter hides its Enter
+(Alt stays, it is WALK). Plus and Minus (also Shift+, and the numpad's) are the host's only while no text field has
+the focus (chat, names, save names) and no mission dialog is up, so they can be typed and bound there.
+
 ## Host options
 
 | option | what |
