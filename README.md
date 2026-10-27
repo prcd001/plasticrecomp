@@ -1,34 +1,57 @@
 # plasticrecomp
 
-A local, private test of static recompilation for Army Men II (The 3DO Company, 1999) with
-[pcrecomp](https://github.com/sp00nznet/pcrecomp). Unofficial; not affiliated with or endorsed
-by Take-Two Interactive, 2K Games or The 3DO Company. "Army Men" is Take-Two's trademark and is
-used here only to say which game this is.
+A native Windows port of Army Men II (The 3DO Company, 1999), made by statically recompiling the
+original game with [pcrecomp](https://github.com/sp00nznet/pcrecomp). Unofficial; not affiliated with
+or endorsed by Take-Two Interactive, 2K Games or The 3DO Company. "Army Men" is Take-Two's trademark and
+is used here only to say which game this is.
 
-The original 1999 code, lifted to C, runs natively on a 32-bit host. The host adds:
+**This repository contains no game code and no game data.** You supply your own copy of the game; the
+setup script lifts your `ArmyMen2.exe` to C on your PC and builds it with the host in `src/host`. The
+original 1999 code, lifted to C, runs natively on a 32-bit host. The host adds:
 - its own DirectDraw and a Direct3D 11 presenter, in a resizable window;
 - a mouse that follows the Windows pointer;
 - a HUD that scales separately from the battlefield;
 - a battlefield that fills the window, however big, with zoom (Plus / Minus).
 
-Where the work stands: `docs/HANDOFF.md`. What was measured: `NOTES.md`. The resolution plan:
-`docs/R_hires.md`.
+Status: the project is a work in progress and has had little play testing. Where the work stands:
+`docs/HANDOFF.md`. What was measured: `NOTES.md`. The resolution plan: `docs/R_hires.md`.
 
 ## Rules
 
-1. **Bring your own copy.** The input is the owner's own retail disc: the English CD's files,
-   copied by the owner from their disc (`G:\Licensed copies\Army Men II ENG`, see
-   `docs/PROVENANCE.md`). `game/` is a local working copy of that folder, because the game writes
-   `Options.cfg` and its saves into its working folder. It is gitignored and never shared.
-2. **The lifted C never leaves this machine.** It is a derivative of the original program, so
-   `src/recomp/gen/`, `work/` and every build output are gitignored, and nothing built from them
-   is ever distributed.
-3. **No copy protection is bypassed.** The lift is of the retail exe as it shipped, CD check
-   included. That check runs when SINGLE PLAYER or BOOT CAMP is chosen and wants the disc (or an
-   image of the owner's disc, mounted) in a drive. pcrecomp's DRM tools are not used, and an exe
-   wrapped in Steam's DRM is refused.
+1. **Bring your own copy.** The input is your own copy of the game: the retail disc's files (copied
+   from the disc or from a mounted image), or a GOG or Steam install. `game/` is a local working copy of that
+   folder, because the game writes `Options.cfg` and its saves into its working folder. It is gitignored
+   and never shared.
+2. **The lifted C never leaves your machine.** It is a derivative of the original program, so
+   `src/recomp/gen/`, `work/` and every build output are gitignored, and nothing built from them is
+   ever distributed. Please don't share them or ask for them.
+3. **No copy protection is bypassed.** The lift is of the exe as it shipped. On the retail disc build
+   the CD check runs when SINGLE PLAYER or BOOT CAMP is chosen and wants the disc (or a mounted image of
+   it) in a drive. pcrecomp's DRM tools are not used, and an exe wrapped in Steam's DRM is refused.
 4. **Run `audit_repo.py` before anything is shared.**
    `python third_party/pcrecomp/tools/audit_repo.py .` must report clean.
+
+## Licence
+
+The code and documents in this repository (`src/host`, `scripts`, `docs`, the `.bat` files) are under
+the MIT licence, see `LICENSE`. That covers this repository only: it grants nothing in Army Men II,
+which belongs to its rights holders, nor in pcrecomp or cnc-ddraw (both MIT, their own licences apply).
+
+## What you need
+
+- Windows 10 or 11, 64-bit (the host and the lifted game are 32-bit).
+- Visual Studio 2022 Build Tools with the C++ x86 tools (`build_host.bat` calls `vcvars32.bat` from
+  `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools`; edit that line for another install).
+- PowerShell 7 (`pwsh`) and Python 3.11.
+- Your own copy of Army Men II (see Rules).
+- The third-party pieces, which are not in this repository (`third_party/` is gitignored):
+  - pcrecomp at the commit pinned in `NOTES.md`:
+    `git clone https://github.com/sp00nznet/pcrecomp third_party/pcrecomp`, then check out that commit;
+  - cnc-ddraw v7.1.0.0 from its [releases](https://github.com/FunkyFr3sh/cnc-ddraw/releases): put
+    `cnc-ddraw.zip` in `third_party/cnc-ddraw/` and unpack it into `third_party/cnc-ddraw/v7.1.0.0/`
+    (`NOTES.md` has the zip's SHA-256);
+  - a virtual environment with the lifter's two packages:
+    `py -3.11 -m venv .venv`, then `.venv\Scripts\pip install capstone pefile`.
 
 ## Layout
 
@@ -41,7 +64,7 @@ Where the work stands: `docs/HANDOFF.md`. What was measured: `NOTES.md`. The res
 | `src/host/config.c` | `plastic.ini`: read at start, written on exit |  yes |
 | `src/host/mouse.c` | the game's DirectInput mouse, fed from the Windows cursor | yes |
 | `scripts/` | lift (`run_lift.py`), setup for disc/GOG/Steam owners (`setup.ps1`), host build, presenter test, run, screenshot, key and hashing tools, the unattended Boot Camp run (`auto_bootcamp.ps1`, `compare_shots.py`) | yes |
-| `docs/` | `HANDOFF.md`, `R_hires.md` (resolution research and plan), `PROVENANCE.md` (the disc copies) | yes |
+| `docs/` | `HANDOFF.md`, `R_hires.md` (resolution research and plan), and the other design notes | yes |
 | `third_party/pcrecomp/` | pcrecomp checkout (MIT), commit in `NOTES.md` | no |
 | `third_party/cnc-ddraw/` | cnc-ddraw v7.1.0.0 (MIT), used only with `--cnc-ddraw` | no |
 | `src/recomp/gen/`, `work/`, `build/` | lifted C, analysis output, objects and the host exe | no |
@@ -49,7 +72,7 @@ Where the work stands: `docs/HANDOFF.md`. What was measured: `NOTES.md`. The res
 
 ## Start it easily
 
-- **First time:** double-click `Setup.bat`. It asks for the folder with your own `ArmyMen2.exe` (disc, copy or install) and
+- **First time:** get the pieces under "What you need", then double-click `Setup.bat`. It asks for the folder with your own `ArmyMen2.exe` (disc, copy or install) and
   runs `scripts\setup.ps1`: it copies the game, lifts it and builds the host.
 - **Every time after:** double-click `Play.bat`. It checks the build and the game folder, refuses a second copy, starts the
   game and keeps the output in `build\last_run.log`. Options pass through: `Play.bat --fullscreen`.
@@ -57,12 +80,12 @@ Where the work stands: `docs/HANDOFF.md`. What was measured: `NOTES.md`. The res
 
 ## Build and run
 
-From `C:\plasticrecomp`, in PowerShell:
+From the repository root, in PowerShell:
 
 ```powershell
 .venv\Scripts\python.exe scripts\run_lift.py game\ArmyMen2.exe src\recomp\gen --report work\table_arms.json
 cmd /c scripts\build_host.bat
-cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > C:\plasticrecomp\build\user_run.log 2>&1"
+cmd /c "build\plasticrecomp.exe --game game > build\user_run.log 2>&1"
 ```
 
 - **Don't relink while the game runs.** Windows locks a running exe, so `build_host.bat` fails to
@@ -71,8 +94,7 @@ cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > 
   says so if one is already running.
 - **First-time setup for any owner** (disc, GOG or Steam): `pwsh scripts\setup.ps1 -From <game folder>`.
   It copies the game into `game\`, puts cnc-ddraw in place, lifts that exe and builds the host. Without
-  `-From` it looks up GOG's and Steam's install records. On the owner's PC always pass `-From`,
-  because it would otherwise find a GOG install the owner does not want used.
+  `-From` it looks up GOG's and Steam's install records. Pass `-From` to choose the copy yourself.
 - **`scripts/run_lift.py`** is pcrecomp's default pipeline plus the jump-table arms it misses. Plain
   `python -m tools` output crashes in memmove. It also records which exe it lifted
   (`recomp_target.h`), and the host refuses to run any other.
@@ -191,7 +213,7 @@ Test switches (environment variables, for diagnosis only):
   DIK scancode (decimal or `0x..`) or ESC, ENTER, SPACE, MINUS, EQUALS, F1, P. ESC skips the intro movies.
   ZOOMIN / ZOOMOUT are no keys: they step the battlefield zoom once, like Plus / Minus in the window.
 
-Unattended test run (needs the disc image mounted at `H:` and no `plasticrecomp.exe` running):
+Unattended test run (the author's setup: needs the disc image mounted at `H:` and no `plasticrecomp.exe` running):
 
 ```powershell
 pwsh scripts\auto_bootcamp.ps1 -Tag before -Duration 80 -Shots 12,28,40,60,75

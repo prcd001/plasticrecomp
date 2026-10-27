@@ -34,3 +34,5 @@ third_party/cnc-ddraw/
 .venv/
 __pycache__/
 *.pyc
+# Local Claude Code instructions
+CLAUDE.md

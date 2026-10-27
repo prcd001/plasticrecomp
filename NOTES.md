@@ -2,10 +2,9 @@
 
 ## 2026-10-26: input switched to the owner's disc copy
 
-The first test lift used a GOG-installer copy whose origin the owner doubts. It was replaced the
-same day: `game/` is now a copy of `G:\Licensed copies\Army Men II ENG`, the owner's English
-retail CD (see `docs/PROVENANCE.md`), and everything lifted from the GOG copy was deleted and
-redone. Only the retail-exe results below count.
+The first test lift used a different copy of the game. It was replaced the same day: `game/` is
+now a copy of the owner's English retail CD, and everything lifted from the earlier copy was
+deleted and redone. Only the retail-exe results below count.
 
 ## Inputs
 
@@ -83,8 +82,7 @@ player pressing a key was not tested.
 
 ## Not done yet
 
-- **Past the title menu.** Works. The owner mounted an image of their own disc (`G:\Licensed
-  copies\Army Men 2 Original ENG.iso`, label `ARMYMEN2`; it had to be mounted after a Windows restart,
+- **Past the title menu.** Works. The owner mounted an image of their own disc (label `ARMYMEN2`; it had to be mounted after a Windows restart,
   because cdrom.sys was stuck with Code 38). They played Boot Camp. Nothing here bypasses the CD check.
 - **Guest C++ exceptions.** The default lifter emits no `RECOMP_EH_ENTER` landing pads, and the CRT is
   static (no `_CxxThrowException` import for native32's eh32 to catch), so a guest `throw` would end
@@ -210,7 +208,7 @@ ZeroTier, Radmin VPN) between the players, each running their own build. Not tes
 
 The GOG `ArmyMen2.exe` (md5 `78a6f534...`) is the retail exe with six CD-check branches changed
 (JNZ to JMP) by the publisher, and every game asset is byte-identical to the disc's
-(`docs/PROVENANCE.md`); only `SMACKW32.DLL` (GOG's is 42,496 B, retail's 95,232 B) and GOG's own
+(compared by SHA-256); only `SMACKW32.DLL` (GOG's is 42,496 B, retail's 95,232 B) and GOG's own
 `ddraw.dll` wrapper differ. So a GOG buyer is supported the same way a disc owner is: lift the exe you
 own. A lift of the GOG exe simply has no CD check.
 
@@ -221,8 +219,7 @@ own. A lift of the GOG exe simply has no CD check.
 - `scripts/setup.ps1` (find the install, including GOG's registry entry for game id 1913968552,
   identify the build, copy it to `game\`, put cnc-ddraw in place of GOG's wrapper in the copy, lift,
   build).
-- Not tested against a GOG install: the GOG copy on this PC is not used (its origin is in doubt), so
-  a GOG buyer's run is the first real test.
+- Not tested against a GOG install, so a GOG buyer's run is the first real test.
 
 ## Steam buyers (app 549170), from public data only
 
@@ -235,7 +232,7 @@ with a browser check, so its per-file list was not read.
 - Depots: **549172** (Windows, the game) 600,368,621 B; **549171** (no OS tag) 1,530,802 B, contents
   unknown; 228990 from app 228980 (Steamworks Common Redistributables, i.e. DirectX).
 - **Size fit (inferred):** the GOG release's game files, without GOG's store packaging, the owner's
-  save and any `ddraw.dll`, total 599,087,970 B (`docs/provenance_compare.tsv`, GOG-era manifest).
+  save and any `ddraw.dll`, total 599,087,970 B (GOG-era manifest).
   Adding GOG's original 2017 DirectDraw wrapper (1,277,952 B) gives 600,365,922 B: **2,699 B short of
   Steam's depot**, about one small config file. So Steam most likely ships the same 2017 2K package as
   GOG: the CD-check-disabled exe, the 42,496 B `SMACKW32.DLL`, the same wrapper. A SteamStub-wrapped exe
@@ -257,6 +254,6 @@ project removes no copy protection, and pcrecomp's `tools/drm/` scripts are not 
 
 `scripts/run.ps1` (run, log to `build\run.log`), `scripts/screenshot.ps1` (capture the game window
 to `build\screens\`), `scripts/boot_check.ps1` (run plus screenshots at 5/12/20/30 s) and
-`scripts/sendkey.ps1` (press keys in the game window). `docs/PROVENANCE.md` records both disc copies
-and compares them with the GOG data: every game asset is identical, only `ArmyMen2.exe` and
+`scripts/sendkey.ps1` (press keys in the game window). Comparing the owner's disc copies
+with the GOG data found every game asset identical; only `ArmyMen2.exe` and
 `SMACKW32.DLL` differ.

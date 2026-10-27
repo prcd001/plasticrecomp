@@ -39,7 +39,7 @@ import re
 import struct
 import sys
 
-# Known ArmyMen2.exe builds, by MD5 (docs/PROVENANCE.md). All are 585,728 B, PE timestamp
+# Known ArmyMen2.exe builds, by MD5. All are 585,728 B, PE timestamp
 # 0x36B7AE36. Any other build lifts too; it is just reported as unknown.
 KNOWN_BUILDS = {
     '59180d8113d1d756e838b0dab1790b6b': 'retail 1999, English CD',
