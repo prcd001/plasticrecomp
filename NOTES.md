@@ -203,7 +203,7 @@ Windows' legacy DirectPlay is already enabled here (registered: `dplayx.dll`, fo
 providers). On a PC where it is not: `Enable-WindowsOptionalFeature -Online -FeatureName DirectPlay -All`
 in an admin PowerShell. DirectPlay does not cross NAT, so internet play needs a virtual LAN (Tailscale,
 ZeroTier, Radmin VPN) between the players, each running their own build. Retail disc builds only: the GOG
-release has multiplayer cut.
+release (and, by its store page, Steam) has multiplayer cut.
 
 Tested on two real PCs on a LAN (2026-10-27, TCP/IP): the lobby, joining, the deployment screen, the mission,
 ESC / ABORT all work. Findings:
@@ -237,7 +237,9 @@ own. A lift of the GOG exe simply has no CD check.
   identify the build, copy it to `game\`, put cnc-ddraw in place of GOG's wrapper in the copy, lift,
   build).
 - Multiplayer is cut from the GOG release, so a GOG install has no network game (the DirectPlay notes above
-  apply to the retail disc build only).
+  apply to the retail disc build only). Steam's store page (read 2026-10-27) lists only "Single-player" and "Family
+  Sharing" (PICS categories 2 and 62: no multiplayer, co-op or LAN category), and its system requirements say "Multiplayer is not supported"; the Steam exe is likely GOG's, so the
+  same holds there.
 - Tested with a GOG install (set up with `scripts\setup.ps1`, played), as with the English retail CD and the
   Russian edition (GSC, WebColl).
 

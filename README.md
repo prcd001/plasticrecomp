@@ -1,20 +1,20 @@
 # plasticrecomp
 
-A native Windows port of Army Men II (The 3DO Company, 1999), made by statically recompiling the
+A native Windows port to C of Army Men II (The 3DO Company, 1999), made by statically recompiling the
 original game with [pcrecomp](https://github.com/sp00nznet/pcrecomp). Unofficial; not affiliated with
 or endorsed by Take-Two Interactive, 2K Games or The 3DO Company. "Army Men" is Take-Two's trademark and
 is used here only to say which game this is.
 
 **This repository contains no game code and no game data.** You supply your own copy of the game; the
 setup script lifts your `ArmyMen2.exe` to C on your PC and builds it with the host in `src/host`. The
-original 1999 code, lifted to C, runs natively on a 32-bit host. The host adds:
+original 1999 code, lifted to C, runs natively, as a normal program on 64-bit Windows. The host adds:
 - its own DirectDraw and a Direct3D 11 presenter, in a resizable window;
 - a mouse that follows the Windows pointer;
 - a HUD that scales separately from the battlefield;
-- a battlefield that fills the window, however big, with zoom (Plus / Minus).
+- a battlefield that fills the window, however big, with zoom (+/- buttons on a keyboard).
 
 Tested with three editions of the game: the original English retail CD, the Russian edition (GSC, WebColl) and the GOG
-release. Multiplayer is only in the disc builds (see "Multiplayer").
+release. Multiplayer is only in the disc builds (see "Multiplayer"); GOG and Steam have none.
 
 Status: the project is a work in progress and has had little play testing. What was measured: `NOTES.md`. The resolution plan: `docs/R_hires.md`.
 
@@ -41,17 +41,20 @@ which belongs to its rights holders, nor in pcrecomp or cnc-ddraw (both MIT, the
 
 ## What you need
 
-- Windows 10 or 11, 64-bit (the host and the lifted game are 32-bit).
-- Four tools, installed once: [Git](https://git-scm.com/download/win), [Python 3](https://www.python.org/downloads/)
-  (3.11 is the tested one; tick "Add python.exe to PATH"), [PowerShell 7](https://aka.ms/powershell) (`pwsh`) and
-  [Build Tools for Visual Studio 2022](https://aka.ms/vs/17/release/vs_BuildTools.exe) with the "Desktop development with
-  C++" workload (`build_host.bat` finds it; `VCVARS32` can point at another `vcvars32.bat`).
+- Windows 10 or 11, 64-bit. (Army Men II is a 32-bit program, so the lifted game and its host are built as 32-bit; Windows runs those out of the box, nothing to install.)
+- [Python 3](https://www.python.org/downloads/), installed once by hand (3.11 is the tested one; tick "Add python.exe to PATH").
+  Nothing else: no Git (download this repository as a ZIP) and no PowerShell 7 (`Setup.bat` uses the Windows PowerShell that
+  every Windows 10 and 11 has).
+- The C++ compiler, [Build Tools for Visual Studio 2022](https://aka.ms/vs/17/release/vs_BuildTools.exe) ("Desktop development
+  with C++"): **`Setup.bat` offers to install it** when it is missing (Microsoft's installer, its signature checked; about 3 GB,
+  10 to 30 minutes, Windows asks for administrator approval). Already installed is found automatically (`VCVARS32` can point
+  at another `vcvars32.bat`).
 - Your own copy of Army Men II (see Rules).
 - The third-party pieces are not in this repository (`third_party/` and `.venv` are gitignored). **`Setup.bat` fetches them
-  for you on its first run:** pcrecomp (cloned at the commit pinned in `NOTES.md`), cnc-ddraw v7.1.0.0 (downloaded from its
+  for you on its first run:** pcrecomp (GitHub's zip of the commit pinned in `NOTES.md`), cnc-ddraw v7.1.0.0 (downloaded from its
   GitHub release and checked against the SHA-256 in `NOTES.md`) and a `.venv` with the lifter's two packages (`capstone`,
-  `pefile`). `scripts\setup.ps1 -NoFetch` downloads nothing: put them in place by hand (clone
-  `https://github.com/sp00nznet/pcrecomp` into `third_party/pcrecomp`, unpack `cnc-ddraw.zip` into
+  `pefile`). `scripts\setup.ps1 -NoFetch` downloads nothing: put them in place by hand (unpack
+  the pinned commit's zip, `https://github.com/sp00nznet/pcrecomp/archive/<commit>.zip`, so that its folder is `third_party/pcrecomp`, unpack `cnc-ddraw.zip` into
   `third_party/cnc-ddraw/v7.1.0.0/`, `py -3.11 -m venv .venv`, then `.venv\Scripts\pip install capstone pefile`).
 
 ## Layout
@@ -73,7 +76,7 @@ which belongs to its rights holders, nor in pcrecomp or cnc-ddraw (both MIT, the
 
 ## Start it easily
 
-- **First time:** install the four tools under "What you need", then double-click `Setup.bat`. It asks for the folder with your own
+- **First time:** install Python (see "What you need"), then double-click `Setup.bat`. It asks for the folder with your own
   `ArmyMen2.exe` (the disc's drive letter such as `E:\` is fine, or a copy or an install; Enter alone looks for GOG and Steam) and
   runs `scripts\setup.ps1`: it fetches the third-party pieces, copies the game, lifts it and builds the host. Expect several minutes.
 - **Every time after:** double-click `Play.bat`. It checks the build and the game folder, refuses a second copy, starts the
@@ -94,7 +97,7 @@ cmd /c "build\plasticrecomp.exe --game game > build\user_run.log 2>&1"
   link while the game is open.
 - **Only one copy at a time.** The game allows a single copy (its mutex `ArmyMenMutex`), and the host
   says so if one is already running.
-- **First-time setup for any owner** (disc, GOG or Steam): `pwsh scripts\setup.ps1 -From <game folder>`.
+- **First-time setup for any owner** (disc, GOG or Steam): `powershell -File scripts\setup.ps1 -From <game folder>`.
   It fetches pcrecomp, cnc-ddraw and the `.venv` when they are missing, copies the game into `game\`, puts cnc-ddraw in place, lifts that exe and builds the host. Without
   `-From` it looks up GOG's and Steam's install records. Pass `-From` to choose the copy yourself.
 - **`scripts/run_lift.py`** is pcrecomp's default pipeline plus the jump-table arms it misses. Plain
@@ -153,8 +156,9 @@ the focus (chat, names, save names) and no mission dialog is up, so they can be 
 
 ### Multiplayer
 
-**Not available from a GOG install:** multiplayer was cut from the GOG release (the 2017 re-release; Steam's store page also lists
-single-player only), so the game's menu has no network game there. Multiplayer needs the retail disc build (English or Russian).
+**Not available from a GOG or Steam install:** multiplayer was cut from the 2017 re-release (GOG's; Steam's store page lists
+"Single-player" only and says "Multiplayer is not supported"), so the game's menu has no network game there. Multiplayer needs the
+retail disc build (English or Russian).
 
 The game's network play (LAN, TCP/IP) goes through Windows' legacy DirectPlay and works with the host's own
 DirectDraw; it was tested between two PCs on a LAN (lobby, deployment screen, mission, ESC / ABORT).
@@ -162,7 +166,7 @@ DirectDraw; it was tested between two PCs on a LAN (lobby, deployment screen, mi
 - Both PCs need the **DirectPlay** Windows feature: `Enable-WindowsOptionalFeature -Online -FeatureName DirectPlay -All`
   in an admin PowerShell (`plasticrecomp.exe --dplay-check` says whether it is there).
 - Both PCs run **the same build** of the host and the lifted game, and the firewall must let `plasticrecomp.exe` through.
-- DirectPlay does not cross NAT: over the internet, put the players on a virtual LAN (Tailscale, ZeroTier, Radmin VPN).
+- DirectPlay does not cross NAT: over the internet, put the players on a virtual LAN (Tailscale, ZeroTier, Radmin VPN, Hamachi).
 - Windows names the connections in the system's language; the host shows the original English names. `PLASTIC_DPNAMES=0` leaves them as Windows gives them.
 - `PLASTIC_MULTI=1` lets a second copy run on one PC (the game normally allows one). Give each copy its own
   `--game` folder and `--ini`, and join over `127.0.0.1`.
@@ -245,9 +249,21 @@ the instruction sheet with Space, parks the pointer, takes screenshots at the `-
 `build\screens\<Tag>_<time>s.png`, and kills the game at `-Duration`. The mission is on screen about 35 s
 after launch. Two runs of the same build give pixel-identical screenshots, apart from a few animated pixels.
 
-## Credits
+## Credits and thanks
 
-- [pcrecomp](https://github.com/sp00nznet/pcrecomp) (sp00nznet): the recompilation toolkit and the 32-bit native runtime this host builds on.
-- [cnc-ddraw](https://github.com/FunkyFr3sh/cnc-ddraw) (FunkyFr3sh): the DirectDraw wrapper the `--cnc-ddraw` path uses.
-- [borancar/ArmyMen2](https://github.com/borancar/ArmyMen2): a reverse-engineering effort for the same game, used as a
-  reference for where the functions start (`scripts/refa_reference.py`, `docs/R_hires.md`). No code of it is included.
+This project stands on other people's work, and thanks go to them:
+
+- **[sp00nznet](https://github.com/sp00nznet)** for [pcrecomp](https://github.com/sp00nznet/pcrecomp) (MIT): the recompilation
+  toolkit and the 32-bit native runtime this whole host is built on. Without it there would be no project.
+- **[FunkyFr3sh](https://github.com/FunkyFr3sh)** and the cnc-ddraw contributors for [cnc-ddraw](https://github.com/FunkyFr3sh/cnc-ddraw)
+  (MIT): the DirectDraw wrapper that carried the early work and still serves the `--cnc-ddraw` path. Setup downloads it from
+  their release.
+- **[borancar](https://github.com/borancar)** for the inspiration.
+- The authors of [Capstone](https://www.capstone-engine.org/) (Nguyen Anh Quynh and contributors, BSD) and
+  [pefile](https://github.com/erocarrera/pefile) (Ero Carrera, MIT), the two Python packages the lifter uses; setup installs both.
+- The [Wine](https://www.winehq.org/) project, whose `dplay.h` was the check for the DirectPlay interface layout used by
+  `--dplay-check`.
+- **The developers of Army Men II** at The 3DO Company, for the game itself. This project only helps it run on a modern PC; the
+  game and its art remain theirs and their rights holders'.
+
+All of these keep their own licences, which apply to their own code (see "Licence").
