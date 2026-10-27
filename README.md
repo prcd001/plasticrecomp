@@ -109,6 +109,7 @@ the focus (chat, names, save names) and no mission dialog is up, so they can be 
 | option | what |
 |---|---|
 | `--game DIR` | the game folder (default `game`) |
+| `--log FILE` | write the host's stdout and stderr to FILE (and let go of the console it was started in, so `start "" plasticrecomp.exe --log FILE` leaves no terminal window; `Play.bat` does this, log in `build\last_run.log`). The `cmd /c "... > log 2>&1"` way still works |
 | `--watchdog S` | report where the guest is after S seconds, then end the run |
 | `--dry` | map and bind only |
 | `--cnc-ddraw` | draw through the game folder's ddraw.dll (cnc-ddraw) instead of the host's virtual DirectDraw and D3D11 presenter |

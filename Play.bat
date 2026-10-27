@@ -25,10 +25,7 @@ rem The retail disc build asks for the CD when you pick SINGLE PLAYER or BOOT CA
 rem Insert the disc, or mount its image, before starting.
 
 rem Extra options can be passed on, e.g.:  Play.bat --fullscreen
-build\plasticrecomp.exe --game "%~dp0game" %* > "%~dp0build\last_run.log" 2>&1
-if errorlevel 1 (
-  echo.
-  echo The game ended with an error. The log is build\last_run.log
-  pause
-)
+rem The host writes its own log (--log) and lets go of this console, so no terminal window stays open while the game runs.
+start "" /min "%~dp0build\plasticrecomp.exe" --game "%~dp0game" --log "%~dp0build\last_run.log" %*
 endlocal
+exit /b 0

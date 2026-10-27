@@ -19,6 +19,7 @@
 #include <objbase.h>
 #include <mmsystem.h>
 #include <stdio.h>
+#include <io.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -696,6 +697,35 @@ static DWORD WINAPI run(LPVOID unused) {
     return g_eax;
 }
 
+/* --log FILE: the host's stdout and stderr go to FILE (opened here, before anything is printed). The re-launched child gets the same
+ * command line and the standard handles of this process, so it opens the file again (truncating it: the child prints everything the parent
+ * did) and both keep working. The console the host was started in is let go a moment later (in both processes, once the child exists and has
+ * inherited it), so `start "" plasticrecomp.exe --log FILE` leaves no terminal window behind. Without --log nothing changes. */
+static DWORD WINAPI let_go_of_console(LPVOID unused) {
+    (void)unused;
+    Sleep(1500);
+    FreeConsole();
+    return 0;
+}
+
+static void redirect_log(int argc, char** argv) {
+    const char* file = NULL;
+    for (int i = 1; i + 1 < argc; i++) if (!strcmp(argv[i], "--log")) file = argv[i + 1];
+    if (!file) return;
+    if (!freopen(file, "w", stderr)) return;
+    _dup2(_fileno(stderr), _fileno(stdout));
+    for (int fd = 1; fd <= 2; fd++) {       /* the standard handles too: the child inherits those, not the C runtime's descriptors */
+        HANDLE h = (HANDLE)_get_osfhandle(fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            SetStdHandle(fd == 1 ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE, h);
+        }
+    }
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    CloseHandle(CreateThread(NULL, 0, let_go_of_console, NULL, 0, NULL));
+}
+
 int main(int argc, char** argv) {
     const char* game = "game";
     /* Both unbuffered: the log is the evidence, and the guest leaves through
@@ -703,8 +733,10 @@ int main(int argc, char** argv) {
      * Redirected to a file, stdout would otherwise be fully buffered. */
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+    redirect_log(argc, argv);
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--game") && i + 1 < argc) game = argv[++i];
+        else if (!strcmp(argv[i], "--log") && i + 1 < argc) ++i;
         else if (!strcmp(argv[i], "--watchdog") && i + 1 < argc) g_watchdog_s = (DWORD)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--dry")) g_dry = 1;
         else if (!strcmp(argv[i], "--imports")) g_report_imports = 1;
@@ -736,7 +768,7 @@ int main(int argc, char** argv) {
         else {
             fprintf(stderr, "usage: %s [--game DIR] [--watchdog S] [--dry] [--imports] [--no-route] [--route-gdi] "
                     "[--raw-mouse] [--mouse-log] [--hires-log] [--native-trace] [--callbacks]\n"
-                    "       [--ini FILE] [--no-ini] [--fullscreen | --windowed] [--vsync 0|1] [--scaling sharp|nearest|smooth|scanlines] | --dplay-check\n", argv[0]);
+                    "       [--log FILE] [--ini FILE] [--no-ini] [--fullscreen | --windowed] [--vsync 0|1] [--scaling sharp|nearest|smooth|scanlines] | --dplay-check\n", argv[0]);
             return 1;
         }
     }
