@@ -78,7 +78,7 @@ static const double k_zoom[] = { 1.0, 1.5, 2.0, 3.0, 4.0 };
 
 static int g_enabled = HIRES_DEFAULT;
 static int g_log;
-static volatile LONG g_zoom_want;       /* zoom index (PLASTIC_ZOOM) */
+static volatile LONG g_zoom_want;       /* zoom index asked for (keys, PLASTIC_ZOOM) */
 
 static CRITICAL_SECTION g_cs;           /* g_view and its flag, game thread vs presenter and mouse */
 static volatile LONG g_cs_ready;
@@ -159,6 +159,16 @@ int hires_view(hires_view_t* v) {
     /* in a mission only: the geometry stays in force until the mouse poll sees the state change, and
      * the layout should not show a stale frame in the meantime */
     return act && (int)MEM32(ADDR_STATE) == STATE_MISSION;
+}
+
+void hires_zoom_step(int dir) {
+    LONG cur = g_zoom_want, n = cur + dir;
+    if (n < 0) n = 0;
+    if (n >= N_ZOOM) n = N_ZOOM - 1;
+    if (n != cur) {
+        InterlockedExchange(&g_zoom_want, n);
+        fprintf(stderr, "[hires] zoom key: index %ld (%.1fx)\n", n, k_zoom[n]);
+    }
 }
 
 /* Back to the 640x480 geometry the menus and movies run in (.data's own values). */
@@ -338,7 +348,7 @@ static void panel_update(void) {
         HWND w = vdd_window();
         int zi = (int)g_zoom_want;
         if (w && GetClientRect(w, &rc) && rc.right > 0 && rc.bottom > 0 &&
-            !g_active)
+            (!g_active || zi != g_applied_zoom || rc.right != g_applied_cw || rc.bottom != g_applied_ch))
             apply_geometry(rc.right, rc.bottom, zi);
         else if (!g_active)
             apply_geometry(640, 480, zi);   /* no window yet (cannot happen in a mission) */

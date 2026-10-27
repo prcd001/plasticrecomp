@@ -177,6 +177,7 @@ static int dik_by_name(const char* s) {
     static const struct { const char* n; int d; } names[] = {
         { "ESC", 1 }, { "ESCAPE", 1 }, { "ENTER", 0x1C }, { "RETURN", 0x1C }, { "SPACE", 0x39 },
         { "MINUS", 0x0C }, { "EQUALS", 0x0D }, { "PLUS", 0x0D }, { "F1", 0x3B }, { "P", 0x19 },
+        { "ZOOMIN", 0xF0 }, { "ZOOMOUT", 0xF1 },     /* not keys: the battlefield zoom, as the window's Plus / Minus */
     };
     for (size_t i = 0; i < sizeof names / sizeof *names; i++)
         if (!_stricmp(s, names[i].n)) return names[i].d;
@@ -243,6 +244,14 @@ static void inject_keys(void* data, DWORD cb) {
     double now = host_seconds();
     for (int i = 0; i < g_keys_n; i++) {
         if (g_keys[i].t > now || g_keys[i].polls <= 0) continue;
+        if (g_keys[i].dik == 0xF0 || g_keys[i].dik == 0xF1) {    /* ZOOMIN / ZOOMOUT: once, nothing for the game */
+            if (g_keys[i].polls == 3) {
+                fprintf(stderr, "[script] %.1f s: zoom %s\n", now, g_keys[i].dik == 0xF0 ? "in" : "out");
+                hires_zoom_step(g_keys[i].dik == 0xF0 ? +1 : -1);
+            }
+            g_keys[i].polls = 0;
+            continue;
+        }
         ((BYTE*)data)[g_keys[i].dik] |= 0x80;
         if (--g_keys[i].polls == 2) fprintf(stderr, "[script] %.1f s: key DIK 0x%02X down\n", now, g_keys[i].dik);
     }

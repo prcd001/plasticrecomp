@@ -30,6 +30,9 @@ int hires_view(hires_view_t* v);
 /* Nonzero from a mission's map load until its first panel update (the loading screen; test dumps). */
 int hires_loading(void);
 
+/* Zoom one step along {1, 1.5, 2, 3, 4} (dir +1 zooms in). Applied at the next panel update. */
+void hires_zoom_step(int dir);
+
 /* From the mouse poll (game thread): goes back to 640x480 geometry once a mission has ended. */
 void hires_poll_state(void);
 /* ... and the end of that poll cycle (the cursor clamp is done). */

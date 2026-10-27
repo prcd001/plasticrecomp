@@ -514,9 +514,10 @@ static LRESULT CALLBACK keep_active(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         fprintf(stderr, "[ddraw] window msg 0x%X wp=%lX\n", msg, (unsigned long)wp);
     if (msg == WM_CLOSE || msg == WM_DESTROY || msg == WM_QUIT || (msg == WM_SYSCOMMAND && (wp & 0xFFF0) == SC_CLOSE))
         fprintf(stderr, "[ddraw] window msg 0x%X wp=%lX (closing)\n", msg, (unsigned long)wp);
-    if (msg == WM_KEYDOWN && (GetKeyState(VK_SHIFT) & 0x8000)) {
-        if (wp == VK_OEM_PLUS || wp == VK_ADD) ui_step(+1);
-        else if (wp == VK_OEM_MINUS || wp == VK_SUBTRACT) ui_step(-1);
+    if (msg == WM_KEYDOWN && (wp == VK_OEM_PLUS || wp == VK_ADD || wp == VK_OEM_MINUS || wp == VK_SUBTRACT)) {
+        int dir = (wp == VK_OEM_PLUS || wp == VK_ADD) ? +1 : -1;
+        if (GetKeyState(VK_SHIFT) & 0x8000) ui_step(dir);             /* the HUD's scale */
+        else if (!(lp & 0x40000000)) hires_zoom_step(dir);            /* the battlefield's zoom (not on auto-repeat) */
     }
     if (msg == WM_ACTIVATEAPP && !wp) return 0;
     if (msg == WM_ACTIVATE && LOWORD(wp) == WA_INACTIVE) return 0;

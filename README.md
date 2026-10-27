@@ -9,7 +9,7 @@ The original 1999 code, lifted to C, runs natively on a 32-bit host. The host ad
 - its own DirectDraw and a Direct3D 11 presenter, in a resizable window;
 - a mouse that follows the Windows pointer;
 - a HUD that scales separately from the battlefield;
-- a battlefield that fills the window, however big (at 1x: one game pixel is one screen pixel).
+- a battlefield that fills the window, however big, with zoom (Plus / Minus).
 
 Where the work stands: `docs/HANDOFF.md`. What was measured: `NOTES.md`. The resolution plan:
 `docs/R_hires.md`.
@@ -76,7 +76,7 @@ cmd /c "C:\plasticrecomp\build\plasticrecomp.exe --game C:\plasticrecomp\game > 
 | key | what |
 |---|---|
 | Shift+Plus / Shift+Minus | in a mission: HUD smaller / larger, in half steps from 1x up to the window's fit size |
-| Plus / Minus | reserved for the battlefield zoom (next step; `PLASTIC_ZOOM` sets a fixed zoom until then) |
+| Plus / Minus | in a mission: battlefield zoom in / out through 1x, 1.5x, 2x, 3x, 4x (1x: one game pixel is one screen pixel, so a 1080p window shows 1920x1050 pixels of map) |
 | Escape | as in the original (skips movies, opens the mission menu) |
 
 ## Host options
@@ -120,6 +120,7 @@ Test switches (environment variables, for diagnosis only):
   the next poll) follows once the cursor has arrived; `,rclick` is the right button.
 - `PLASTIC_KEYS="t:KEY;..."`: holds a DirectInput key down for 3 keyboard polls from time `t`. `KEY` is a
   DIK scancode (decimal or `0x..`) or ESC, ENTER, SPACE, MINUS, EQUALS, F1, P. ESC skips the intro movies.
+  ZOOMIN / ZOOMOUT are no keys: they step the battlefield zoom once, like Plus / Minus in the window.
 
 Unattended test run (needs the disc image mounted at `H:` and no `plasticrecomp.exe` running):
 
